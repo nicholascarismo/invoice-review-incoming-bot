@@ -232,165 +232,118 @@ app.action('open_update_modal', async ({ ack, body, client, logger, action }) =>
         submit: { type: 'plain_text', text: 'Done' },
         close: { type: 'plain_text', text: 'Cancel' },
         blocks: [
-  // Parts
-  {
-    type: 'header',
-    text: { type: 'plain_text', text: 'Parts' }
-  },
-  {
-    type: 'input',
-    block_id: 'parts_block',
-    optional: false,
-    label: { type: 'plain_text', text: 'Select all that apply' },
-    element: {
-      type: 'checkboxes',
-      action_id: 'parts_check',
-      initial_options: [
-        {
-          text: { type: 'plain_text', text: 'Steering Wheel' },
-          value: 'steering_wheel'
-        }
-      ],
-      options: [
-        { text: { type: 'plain_text', text: 'Steering Wheel' }, value: 'steering_wheel' },
-        { text: { type: 'plain_text', text: 'Trim' }, value: 'trim' },
-        { text: { type: 'plain_text', text: 'Paddles' }, value: 'paddles' },
-        { text: { type: 'plain_text', text: 'Magnetic Paddles' }, value: 'magnetic_paddles' },
-        { text: { type: 'plain_text', text: 'DA Module' }, value: 'da_module' },
-        { text: { type: 'plain_text', text: 'Return Label' }, value: 'return_label' },
-        { text: { type: 'plain_text', text: 'Other (requires text)' }, value: 'other' },
-        { text: { type: 'plain_text', text: 'Parts Set Aside (requires text)' }, value: 'set_aside' }
-      ]
-    }
-  },
+          // Parts
+          {
+            type: 'header',
+            text: { type: 'plain_text', text: 'Parts' }
+          },
+          {
+            type: 'input',
+            block_id: 'parts_block',
+            optional: false,
+            label: { type: 'plain_text', text: 'Select all that apply' },
+            element: {
+              type: 'checkboxes',
+              action_id: 'parts_check',
+              initial_options: [
+                {
+                  text: { type: 'plain_text', text: 'Steering Wheel' },
+                  value: 'steering_wheel'
+                }
+              ],
+              options: [
+                { text: { type: 'plain_text', text: 'Steering Wheel' }, value: 'steering_wheel' },
+                { text: { type: 'plain_text', text: 'Trim' }, value: 'trim' },
+                { text: { type: 'plain_text', text: 'Paddles' }, value: 'paddles' },
+                { text: { type: 'plain_text', text: 'Magnetic Paddles' }, value: 'magnetic_paddles' },
+                { text: { type: 'plain_text', text: 'DA Module' }, value: 'da_module' },
+                { text: { type: 'plain_text', text: 'Return Label' }, value: 'return_label' },
+                { text: { type: 'plain_text', text: 'Other (requires text)' }, value: 'other' },
+                { text: { type: 'plain_text', text: 'Parts Set Aside (requires text)' }, value: 'set_aside' }
+              ]
+            }
+          },
+          {
+            type: 'input',
+            block_id: 'parts_other_text',
+            optional: true,
+            label: { type: 'plain_text', text: 'Other — details (required if selected above)' },
+            element: {
+              type: 'plain_text_input',
+              action_id: 'other_text',
+              multiline: false,
+              placeholder: { type: 'plain_text', text: 'Enter details if you checked "Other"' }
+            }
+          },
+          {
+            type: 'input',
+            block_id: 'parts_set_aside_text',
+            optional: true,
+            label: { type: 'plain_text', text: 'Parts Set Aside — details (required if selected above)' },
+            element: {
+              type: 'plain_text_input',
+              action_id: 'set_aside_text',
+              multiline: false,
+              placeholder: { type: 'plain_text', text: 'Enter details if you checked "Parts Set Aside"' }
+            }
+          },
 
-  // Fulfillment
-  { type: 'divider' },
-  { type: 'header', text: { type: 'plain_text', text: 'Fulfillment' } },
-  {
-    type: 'input',
-    block_id: 'fulfillment_block',
-    optional: false,
-    label: { type: 'plain_text', text: 'Choose one' },
-    element: {
-      type: 'radio_buttons',
-      action_id: 'fulfillment_radio',
-      initial_option: {
-        text: { type: 'plain_text', text: 'Ship' },
-        value: 'ship'
-      },
-      options: [
-        { text: { type: 'plain_text', text: 'Ship' }, value: 'ship' },
-        { text: { type: 'plain_text', text: 'Install/Pickup' }, value: 'install_pickup' },
-        { text: { type: 'plain_text', text: 'TBD' }, value: 'tbd' }
-      ]
-    }
-  },
+          // Fulfillment
+          {
+            type: 'divider'
+          },
+          { type: 'header', text: { type: 'plain_text', text: 'Fulfillment' } },
+          {
+            type: 'input',
+            block_id: 'fulfillment_block',
+            optional: false,
+            label: { type: 'plain_text', text: 'Choose one' },
+            element: {
+              type: 'radio_buttons',
+              action_id: 'fulfillment_radio',
+              initial_option: {
+                text: { type: 'plain_text', text: 'Ship' },
+                value: 'ship'
+              },
+              options: [
+                { text: { type: 'plain_text', text: 'Ship' }, value: 'ship' },
+                { text: { type: 'plain_text', text: 'Install/Pickup' }, value: 'install_pickup' },
+                { text: { type: 'plain_text', text: 'TBD' }, value: 'tbd' }
+              ]
+            }
+          },
 
-  // Payment
-  { type: 'divider' },
-  { type: 'header', text: { type: 'plain_text', text: 'Payment' } },
-  {
-    type: 'input',
-    block_id: 'payment_block',
-    optional: false,
-    label: { type: 'plain_text', text: 'Choose one' },
-    element: {
-      type: 'radio_buttons',
-      action_id: 'payment_radio',
-      initial_option: {
-        text: { type: 'plain_text', text: 'PIF' },
-        value: 'pif'
-      },
-      options: [
-        { text: { type: 'plain_text', text: 'PIF' }, value: 'pif' },
-        { text: { type: 'plain_text', text: 'Deposit' }, value: 'deposit' },
-        { text: { type: 'plain_text', text: 'PIF + Pre-Paid Install' }, value: 'pif_prepaid_install' },
-        { text: { type: 'plain_text', text: 'Unpaid' }, value: 'unpaid' },
-        { text: { type: 'plain_text', text: 'Unknown' }, value: 'unknown' }
-      ]
-    }
-  }
-]
+          // Payment
+          {
+            type: 'divider'
+          },
+          { type: 'header', text: { type: 'plain_text', text: 'Payment' } },
+          {
+            type: 'input',
+            block_id: 'payment_block',
+            optional: false,
+            label: { type: 'plain_text', text: 'Choose one' },
+            element: {
+              type: 'radio_buttons',
+              action_id: 'payment_radio',
+              initial_option: {
+                text: { type: 'plain_text', text: 'PIF' },
+                value: 'pif'
+              },
+              options: [
+                { text: { type: 'plain_text', text: 'PIF' }, value: 'pif' },
+                { text: { type: 'plain_text', text: 'Deposit' }, value: 'deposit' },
+                { text: { type: 'plain_text', text: 'PIF + Pre-Paid Install' }, value: 'pif_prepaid_install' },
+                { text: { type: 'plain_text', text: 'Unpaid' }, value: 'unpaid' },
+                { text: { type: 'plain_text', text: 'Unknown' }, value: 'unknown' }
+              ]
+            }
+          }
+        ]
       }
     });
   } catch (e) {
     logger.error('open_update_modal error:', e);
-  }
-});
-
-// Dynamically show/hide inline text inputs for "Other" and "Parts Set Aside"
-app.action('parts_check', async ({ ack, body, client, logger }) => {
-  await ack();
-
-  try {
-    const view = body.view;
-    const values = view?.state?.values || {};
-    const selected = (values?.parts_block?.parts_check?.selected_options || []).map(o => o.value);
-
-    // Start from the current blocks and remove any previous inline inputs we added
-    const existingBlocks = Array.isArray(view.blocks) ? [...view.blocks] : [];
-    const cleaned = existingBlocks.filter(
-      b => b.block_id !== 'parts_other_text' && b.block_id !== 'parts_set_aside_text'
-    );
-
-    // Find where to insert — right after 'parts_block'
-    const partsIdx = cleaned.findIndex(b => b.block_id === 'parts_block');
-    const insertAt = partsIdx === -1 ? 0 : partsIdx + 1;
-
-    // Build the (optional) inline text inputs
-    const toInsert = [];
-
-    if (selected.includes('other')) {
-      toInsert.push({
-        type: 'input',
-        block_id: 'parts_other_text',
-        optional: true,
-        label: { type: 'plain_text', text: 'Other — details (required if selected above)' },
-        element: {
-          type: 'plain_text_input',
-          action_id: 'other_text',
-          multiline: false,
-          placeholder: { type: 'plain_text', text: 'Enter details if you checked "Other"' }
-        }
-      });
-    }
-
-    if (selected.includes('set_aside')) {
-      toInsert.push({
-        type: 'input',
-        block_id: 'parts_set_aside_text',
-        optional: true,
-        label: { type: 'plain_text', text: 'Parts Set Aside — details (required if selected above)' },
-        element: {
-          type: 'plain_text_input',
-          action_id: 'set_aside_text',
-          multiline: false,
-          placeholder: { type: 'plain_text', text: 'Enter details if you checked "Parts Set Aside"' }
-        }
-      });
-    }
-
-    // Splice the optional blocks immediately after the Parts checkbox block
-    const newBlocks = [...cleaned];
-    newBlocks.splice(insertAt, 0, ...toInsert);
-
-    // Update the modal in-place
-    await client.views.update({
-      view_id: view.id,
-      hash: view.hash, // prevent race conditions
-      view: {
-        type: 'modal',
-        callback_id: view.callback_id,
-        private_metadata: view.private_metadata,
-        title: view.title,
-        submit: view.submit,
-        close: view.close,
-        blocks: newBlocks
-      }
-    });
-  } catch (e) {
-    logger.error('parts_check update error:', e);
   }
 });
 
