@@ -94,14 +94,14 @@ async function shopifyFetch(pathname, { method = 'GET', headers = {}, body } = {
   return res.json();
 }
 
-// Look up by Shopify order "name", which is like "#1234" (the FlowBot message is "C#1234")
+// Look up by Shopify order "name", which is like "C#1234"
 async function findOrderByName(orderNumber4Digits) {
-  const name = `%23${orderNumber4Digits}`; // url-encoded '#1234' without the C
-  const data = await shopifyFetch(`/orders.json?name=${name}&status=any`);
-  // Expect exact match on name "#1234"
-  const order = (data.orders || []).find(o => typeof o.name === 'string' && o.name.replace(/^#/, '') === orderNumber4Digits);
+  const encodedName = encodeURIComponent(`C#${orderNumber4Digits}`); // "C%231234"
+  const data = await shopifyFetch(`/orders.json?name=${encodedName}&status=any`);
+  const expected = `C#${orderNumber4Digits}`;
+  const order = (data.orders || []).find(o => typeof o.name === 'string' && o.name === expected);
   if (!order) {
-    throw new Error(`Order #${orderNumber4Digits} not found`);
+    throw new Error(`Order C#${orderNumber4Digits} not found`);
   }
   return order;
 }
@@ -168,7 +168,7 @@ app.event('message', async ({ event, client, logger, say }) => {
       await client.chat.postMessage({
         channel: event.channel,
         thread_ts: event.ts,
-        text: `Order #${orderDigits} not found in Shopify.`
+        text: `Order C#${orderDigits} not found in Shopify.`
       });
       return;
     }
@@ -181,12 +181,12 @@ app.event('message', async ({ event, client, logger, say }) => {
     await client.chat.postMessage({
       channel: event.channel,
       thread_ts: event.ts,
-      text: `Order #${orderDigits} Found - ${customerName || 'Unknown'}`,
-      blocks: [
-        {
-          type: 'section',
-          text: { type: 'mrkdwn', text: `*Order #${orderDigits}* Found — *${customerName || 'Unknown'}*` }
-        },
+      text: `Order C#${orderDigits} Found - ${customerName || 'Unknown'}`,
+blocks: [
+  {
+    type: 'section',
+    text: { type: 'mrkdwn', text: `*Order C#${orderDigits}* Found — *${customerName || 'Unknown'}*` }
+  },
         {
           type: 'actions',
           elements: [
@@ -228,7 +228,7 @@ app.action('open_update_modal', async ({ ack, body, client, logger, action }) =>
         type: 'modal',
         callback_id: 'update_meta_modal_submit',
         private_metadata: JSON.stringify(meta),
-        title: { type: 'plain_text', text: `Order #${meta.orderDigits}` },
+        title: { type: 'plain_text', text: `Order C#${meta.orderDigits}` },
         submit: { type: 'plain_text', text: 'Done' },
         close: { type: 'plain_text', text: 'Cancel' },
         blocks: [
@@ -398,7 +398,7 @@ app.view('update_meta_modal_submit', async ({ ack, body, view, client, logger })
       await client.chat.postMessage({
         channel: meta.channel,
         thread_ts: meta.thread_ts,
-        text: `Updated selections for Order #${meta.orderDigits}: Parts / Fulfillment / Payment captured.`
+        text: `Updated selections for Order C#${meta.orderDigits}: Parts / Fulfillment / Payment captured.`
       });
     }
   } catch (e) {
