@@ -1,0 +1,19 @@
+{
+  "name": "shopify-order-tagging-bot",
+  "version": "1.0.0",
+  "description": "Watches a Slack channel for FlowBot order messages (e.g., C#2451), looks up the Shopify order, and opens a modal to capture Parts / Fulfillment / Payment selections.",
+  "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "health": "node -e \"fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/health').then(r=>r.text()).then(console.log).catch(e=>{console.error(e);process.exit(1)})\""
+  },
+  "dependencies": {
+    "@slack/bolt": "^3.17.1",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1"
+  }
+}
