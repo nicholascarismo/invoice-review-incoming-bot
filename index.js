@@ -195,6 +195,9 @@ function buildInitialsFromMetafields(mfMap) {
     // 8. Parts Set Aside text
     setAsideText = v('custom.parts_set_aside_already'); // pre-fill if present
 
+if ((otherText || '').trim()) partsSelections.push('other');
+if ((setAsideText || '').trim()) partsSelections.push('set_aside');
+
     // 9. Fulfillment
     const f = v('custom.ship_install_pickup');
     if (f === 'Ship') fulfillment = 'ship';
@@ -513,7 +516,20 @@ app.view('update_meta_modal_submit', async ({ ack, body, view, client, logger })
       paymentVal === 'unpaid' ? 'Unpaid' :
       paymentVal === 'unknown' ? 'Unknown' : 'PIF';
 
-const partsSelected = (state?.parts_block?.parts_check?.selected_options || []).map(o => o.value);
+// Read current checkbox selections from the modal
+let partsSelected = (state?.parts_block?.parts_check?.selected_options || []).map(o => o.value);
+
+// Read the two text inputs
+const otherText    = state?.parts_other_text?.other_text?.value?.trim();
+const setAsideText = state?.parts_set_aside_text?.set_aside_text?.value?.trim();
+
+// Rule #1: If any text is entered, treat the respective checkbox as selected
+if ((otherText || '').trim() && !partsSelected.includes('other')) {
+  partsSelected.push('other');
+}
+if ((setAsideText || '').trim() && !partsSelected.includes('set_aside')) {
+  partsSelected.push('set_aside');
+}
 
 const partsSet = new Set(partsSelected);
 const steeringWheelOn = partsSet.has('steering_wheel');
@@ -523,10 +539,8 @@ const magPaddlesOn    = partsSet.has('magnetic_paddles');
 const daModuleOn      = partsSet.has('da_module');
 const returnLabelOn   = partsSet.has('return_label');
 
-const otherSelected   = partsSelected.includes('other');
-const setAsideSelected= partsSelected.includes('set_aside');
-const otherText       = state?.parts_other_text?.other_text?.value?.trim();
-const setAsideText    = state?.parts_set_aside_text?.set_aside_text?.value?.trim();
+const otherSelected    = partsSet.has('other');
+const setAsideSelected = partsSet.has('set_aside');
 
     const errors = {};
     if (otherSelected && !otherText) {
