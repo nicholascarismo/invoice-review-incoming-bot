@@ -141,6 +141,15 @@ async function upsertOrderMetafield(orderId, namespace, key, value, typeHint) {
   }
 }
 
+// Delete a single order metafield if it exists
+async function deleteOrderMetafield(orderId, namespace, key) {
+  const list = await shopifyFetch(`/orders/${orderId}/metafields.json`);
+  const existing = (list.metafields || []).find(m => m.namespace === namespace && m.key === key);
+  if (existing) {
+    await shopifyFetch(`/metafields/${existing.id}.json`, { method: 'DELETE' });
+  }
+}
+
 // Build initial modal selections from metafields, following your exact rules
 function buildInitialsFromMetafields(mfMap) {
   const v = (k) => (mfMap[k] || '').trim();
@@ -556,15 +565,27 @@ const setAsideText    = state?.parts_set_aside_text?.set_aside_text?.value?.trim
 
     // 1) Parts (single line text)
     const mfOps = [
-      upsertOrderMetafield(meta.orderId, 'custom', 'parts_steering_wheel',     yesNo(steeringWheelOn, 'Steering Wheel', 'No Steering Wheel')),
-      upsertOrderMetafield(meta.orderId, 'custom', 'parts_trim',               yesNo(trimOn,          'Trim',            'No Trim')),
-      upsertOrderMetafield(meta.orderId, 'custom', 'parts_paddles',            yesNo(paddlesOn,       'Paddles',         'No Paddles')),
-      upsertOrderMetafield(meta.orderId, 'custom', 'parts_magnetic_paddles',   yesNo(magPaddlesOn,    'Magnetic Paddles','No Magnetic Paddles')),
-      upsertOrderMetafield(meta.orderId, 'custom', 'parts_da_module',          yesNo(daModuleOn,      'DA Module',       'No DA Module')),
-      upsertOrderMetafield(meta.orderId, 'custom', 'parts_return_label',       yesNo(returnLabelOn,   'Return Label',    'No Return Label')),
-      upsertOrderMetafield(meta.orderId, 'custom', 'parts_other',              otherSelected ? (otherText || '') : ''),           // blank if not selected
-      upsertOrderMetafield(meta.orderId, 'custom', 'parts_set_aside_already',  setAsideSelected ? (setAsideText || '') : '')      // blank if not selected
-    ];
+  upsertOrderMetafield(meta.orderId, 'custom', 'parts_steering_wheel',     yesNo(steeringWheelOn, 'Steering Wheel', 'No Steering Wheel')),
+  upsertOrderMetafield(meta.orderId, 'custom', 'parts_trim',               yesNo(trimOn,          'Trim',            'No Trim')),
+  upsertOrderMetafield(meta.orderId, 'custom', 'parts_paddles',            yesNo(paddlesOn,       'Paddles',         'No Paddles')),
+  upsertOrderMetafield(meta.orderId, 'custom', 'parts_magnetic_paddles',   yesNo(magPaddlesOn,    'Magnetic Paddles','No Magnetic Paddles')),
+  upsertOrderMetafield(meta.orderId, 'custom', 'parts_da_module',          yesNo(daModuleOn,      'DA Module',       'No DA Module')),
+  upsertOrderMetafield(meta.orderId, 'custom', 'parts_return_label',       yesNo(returnLabelOn,   'Return Label',    'No Return Label')),
+];
+
+// parts_other: write when selected, otherwise DELETE if exists
+if (otherSelected && (otherText || '').trim() !== '') {
+  mfOps.push(upsertOrderMetafield(meta.orderId, 'custom', 'parts_other', (otherText || '').trim()));
+} else {
+  mfOps.push(deleteOrderMetafield(meta.orderId, 'custom', 'parts_other'));
+}
+
+// parts_set_aside_already: write when selected, otherwise DELETE if exists
+if (setAsideSelected && (setAsideText || '').trim() !== '') {
+  mfOps.push(upsertOrderMetafield(meta.orderId, 'custom', 'parts_set_aside_already', (setAsideText || '').trim()));
+} else {
+  mfOps.push(deleteOrderMetafield(meta.orderId, 'custom', 'parts_set_aside_already'));
+}
 
     // 2) Fulfillment (single line text)
     mfOps.push(upsertOrderMetafield(meta.orderId, 'custom', 'ship_install_pickup', fulfillmentLabel));
@@ -581,8 +602,12 @@ const setAsideText    = state?.parts_set_aside_text?.set_aside_text?.value?.trim
       .filter(t => t.startsWith('PartsSupplier_'))
       .map(t => t.substring('PartsSupplier_'.length))
       .filter(Boolean);
-    const suppliersCsv = suppliers.join(', ');
-    mfOps.push(upsertOrderMetafield(meta.orderId, 'custom', 'parts_suppliers', suppliersCsv));
+const suppliersCsv = suppliers.join(', ');
+if (suppliersCsv) {
+  mfOps.push(upsertOrderMetafield(meta.orderId, 'custom', 'parts_suppliers', suppliersCsv));
+} else {
+  mfOps.push(deleteOrderMetafield(meta.orderId, 'custom', 'parts_suppliers'));
+}
 
     // 6) packing_slip_notes (multi-line text)
     const partsListForLine3 = [];
