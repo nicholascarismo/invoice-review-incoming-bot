@@ -504,18 +504,20 @@ app.view('update_meta_modal_submit', async ({ ack, body, view, client, logger })
       paymentVal === 'unpaid' ? 'Unpaid' :
       paymentVal === 'unknown' ? 'Unknown' : 'PIF';
 
-    const partsSet = new Set(partsSelected); // from your existing partsSelected
-    const steeringWheelOn = partsSet.has('steering_wheel');
-    const trimOn          = partsSet.has('trim');
-    const paddlesOn       = partsSet.has('paddles');
-    const magPaddlesOn    = partsSet.has('magnetic_paddles');
-    const daModuleOn      = partsSet.has('da_module');
-    const returnLabelOn   = partsSet.has('return_label');
-    const partsSelected = (state?.parts_block?.parts_check?.selected_options || []).map(o => o.value);
-    const otherSelected = partsSelected.includes('other');
-    const setAsideSelected = partsSelected.includes('set_aside');
-    const otherText = state?.parts_other_text?.other_text?.value?.trim();
-    const setAsideText = state?.parts_set_aside_text?.set_aside_text?.value?.trim();
+const partsSelected = (state?.parts_block?.parts_check?.selected_options || []).map(o => o.value);
+
+const partsSet = new Set(partsSelected);
+const steeringWheelOn = partsSet.has('steering_wheel');
+const trimOn          = partsSet.has('trim');
+const paddlesOn       = partsSet.has('paddles');
+const magPaddlesOn    = partsSet.has('magnetic_paddles');
+const daModuleOn      = partsSet.has('da_module');
+const returnLabelOn   = partsSet.has('return_label');
+
+const otherSelected   = partsSelected.includes('other');
+const setAsideSelected= partsSelected.includes('set_aside');
+const otherText       = state?.parts_other_text?.other_text?.value?.trim();
+const setAsideText    = state?.parts_set_aside_text?.set_aside_text?.value?.trim();
 
     const errors = {};
     if (otherSelected && !otherText) {
