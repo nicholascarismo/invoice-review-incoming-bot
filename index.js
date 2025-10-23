@@ -94,6 +94,86 @@ async function shopifyFetch(pathname, { method = 'GET', headers = {}, body } = {
   return res.json();
 }
 
+
+// Fetch all metafields for an order and return a map like {"namespace.key": "value"}
+async function fetchOrderMetafields(orderId) {
+  const data = await shopifyFetch(`/orders/${orderId}/metafields.json`);
+  const out = {};
+  for (const mf of (data.metafields || [])) {
+    const ns = (mf.namespace || '').trim();
+    const key = (mf.key || '').trim();
+    const val = (mf.value ?? '').toString().trim();
+    if (ns && key) out[`${ns}.${key}`] = val;
+  }
+  return out;
+}
+
+// Build initial modal selections from metafields, following your exact rules
+function buildInitialsFromMetafields(mfMap) {
+  const v = (k) => (mfMap[k] || '').trim();
+
+  const taggingDone = v('custom.initial_slack_tagging_done').toLowerCase();
+  const useMeta = taggingDone === 'yes';
+
+  // Defaults (when blank or "No")
+  let partsSelections = ['steering_wheel']; // default pre-check Steering Wheel
+  let fulfillment = 'ship';                 // default Ship
+  let payment = 'pif';                      // default PIF
+  let otherText = '';
+  let setAsideText = '';
+
+  if (useMeta) {
+    partsSelections = [];
+    // 1. Steering Wheel
+    if (v('custom.parts_steering_wheel').toLowerCase() === 'steering wheel') {
+      partsSelections.push('steering_wheel');
+    }
+    // 2. Trim
+    if (v('custom.parts_trim').toLowerCase() === 'trim') {
+      partsSelections.push('trim');
+    }
+    // 3. Paddles
+    if (v('custom.parts_paddles').toLowerCase() === 'paddles') {
+      partsSelections.push('paddles');
+    }
+    // 4. Magnetic Paddles
+    if (v('custom.parts_magnetic_paddles').toLowerCase() === 'magnetic paddles') {
+      partsSelections.push('magnetic_paddles');
+    }
+    // 5. DA Module
+    if (v('custom.parts_da_module').toLowerCase() === 'da module') {
+      partsSelections.push('da_module');
+    }
+    // 6. Return Label
+    if (v('custom.parts_return_label').toLowerCase() === 'return label') {
+      partsSelections.push('return_label');
+    }
+    // 7. Other text
+    otherText = v('custom.parts_other'); // pre-fill if present
+    // 8. Parts Set Aside text
+    setAsideText = v('custom.parts_set_aside_already'); // pre-fill if present
+
+    // 9. Fulfillment
+    const f = v('custom.ship_install_pickup');
+    if (f === 'Ship') fulfillment = 'ship';
+    else if (f === 'Install/Pickup') fulfillment = 'install_pickup';
+    else if (f === 'TBD') fulfillment = 'tbd';
+    else if (!f) fulfillment = 'ship'; // blank -> Ship
+
+    // 10. Payment
+    const p = v('custom.pif_or_not');
+    if (p === 'PIF') payment = 'pif';
+    else if (p === 'Deposit') payment = 'deposit';
+    else if (p === 'PIF + Pre-Paid Install') payment = 'pif_prepaid_install';
+    else if (p === 'Unpaid') payment = 'unpaid';
+    else if (p === 'Unknown') payment = 'unknown';
+    else if (!p) payment = 'unknown'; // blank -> Unknown
+  }
+
+  return { useMeta, partsSelections, fulfillment, payment, otherText, setAsideText };
+}
+
+
 // Look up by Shopify order "name", which is like "C#1234"
 async function findOrderByName(orderNumber4Digits) {
   const encodedName = encodeURIComponent(`C#${orderNumber4Digits}`); // "C%231234"
@@ -222,6 +302,44 @@ app.action('open_update_modal', async ({ ack, body, client, logger, action }) =>
   } catch (_) {}
 
   try {
+    // 1) Pull order metafields
+    const mfMap = await fetchOrderMetafields(meta.orderId);
+    // 2) Compute initial selections from metafields per your rules
+    const init = buildInitialsFromMetafields(mfMap);
+
+    // Options list for Parts
+    const PART_OPTIONS = [
+      { text: { type: 'plain_text', text: 'Steering Wheel' }, value: 'steering_wheel' },
+      { text: { type: 'plain_text', text: 'Trim' }, value: 'trim' },
+      { text: { type: 'plain_text', text: 'Paddles' }, value: 'paddles' },
+      { text: { type: 'plain_text', text: 'Magnetic Paddles' }, value: 'magnetic_paddles' },
+      { text: { type: 'plain_text', text: 'DA Module' }, value: 'da_module' },
+      { text: { type: 'plain_text', text: 'Return Label' }, value: 'return_label' },
+      { text: { type: 'plain_text', text: 'Other (requires text)' }, value: 'other' },
+      { text: { type: 'plain_text', text: 'Parts Set Aside (requires text)' }, value: 'set_aside' }
+    ];
+
+    const initialCheckboxOptions = PART_OPTIONS.filter(o =>
+      init.partsSelections.includes(o.value)
+    );
+
+    // Build radio initial options
+    const fulfillmentInitial = {
+      text: { type: 'plain_text', text: init.fulfillment === 'install_pickup' ? 'Install/Pickup' : (init.fulfillment === 'tbd' ? 'TBD' : 'Ship') },
+      value: init.fulfillment
+    };
+
+    const paymentLabel =
+      init.payment === 'deposit' ? 'Deposit' :
+      init.payment === 'pif_prepaid_install' ? 'PIF + Pre-Paid Install' :
+      init.payment === 'unpaid' ? 'Unpaid' :
+      init.payment === 'unknown' ? 'Unknown' : 'PIF';
+
+    const paymentInitial = {
+      text: { type: 'plain_text', text: paymentLabel },
+      value: init.payment
+    };
+
     await client.views.open({
       trigger_id: body.trigger_id,
       view: {
@@ -245,22 +363,8 @@ app.action('open_update_modal', async ({ ack, body, client, logger, action }) =>
             element: {
               type: 'checkboxes',
               action_id: 'parts_check',
-              initial_options: [
-                {
-                  text: { type: 'plain_text', text: 'Steering Wheel' },
-                  value: 'steering_wheel'
-                }
-              ],
-              options: [
-                { text: { type: 'plain_text', text: 'Steering Wheel' }, value: 'steering_wheel' },
-                { text: { type: 'plain_text', text: 'Trim' }, value: 'trim' },
-                { text: { type: 'plain_text', text: 'Paddles' }, value: 'paddles' },
-                { text: { type: 'plain_text', text: 'Magnetic Paddles' }, value: 'magnetic_paddles' },
-                { text: { type: 'plain_text', text: 'DA Module' }, value: 'da_module' },
-                { text: { type: 'plain_text', text: 'Return Label' }, value: 'return_label' },
-                { text: { type: 'plain_text', text: 'Other (requires text)' }, value: 'other' },
-                { text: { type: 'plain_text', text: 'Parts Set Aside (requires text)' }, value: 'set_aside' }
-              ]
+              initial_options: initialCheckboxOptions,  // from metafields or default
+              options: PART_OPTIONS
             }
           },
           {
@@ -272,6 +376,7 @@ app.action('open_update_modal', async ({ ack, body, client, logger, action }) =>
               type: 'plain_text_input',
               action_id: 'other_text',
               multiline: false,
+              initial_value: init.otherText || '',
               placeholder: { type: 'plain_text', text: 'Enter details if you checked "Other"' }
             }
           },
@@ -284,14 +389,13 @@ app.action('open_update_modal', async ({ ack, body, client, logger, action }) =>
               type: 'plain_text_input',
               action_id: 'set_aside_text',
               multiline: false,
+              initial_value: init.setAsideText || '',
               placeholder: { type: 'plain_text', text: 'Enter details if you checked "Parts Set Aside"' }
             }
           },
 
           // Fulfillment
-          {
-            type: 'divider'
-          },
+          { type: 'divider' },
           { type: 'header', text: { type: 'plain_text', text: 'Fulfillment' } },
           {
             type: 'input',
@@ -301,10 +405,7 @@ app.action('open_update_modal', async ({ ack, body, client, logger, action }) =>
             element: {
               type: 'radio_buttons',
               action_id: 'fulfillment_radio',
-              initial_option: {
-                text: { type: 'plain_text', text: 'Ship' },
-                value: 'ship'
-              },
+              initial_option: fulfillmentInitial,
               options: [
                 { text: { type: 'plain_text', text: 'Ship' }, value: 'ship' },
                 { text: { type: 'plain_text', text: 'Install/Pickup' }, value: 'install_pickup' },
@@ -314,9 +415,7 @@ app.action('open_update_modal', async ({ ack, body, client, logger, action }) =>
           },
 
           // Payment
-          {
-            type: 'divider'
-          },
+          { type: 'divider' },
           { type: 'header', text: { type: 'plain_text', text: 'Payment' } },
           {
             type: 'input',
@@ -326,10 +425,7 @@ app.action('open_update_modal', async ({ ack, body, client, logger, action }) =>
             element: {
               type: 'radio_buttons',
               action_id: 'payment_radio',
-              initial_option: {
-                text: { type: 'plain_text', text: 'PIF' },
-                value: 'pif'
-              },
+              initial_option: paymentInitial,
               options: [
                 { text: { type: 'plain_text', text: 'PIF' }, value: 'pif' },
                 { text: { type: 'plain_text', text: 'Deposit' }, value: 'deposit' },
