@@ -109,31 +109,33 @@ async function fetchOrderMetafields(orderId) {
 }
 
 // Create or update a single order metafield (REST)
-async function upsertOrderMetafield(orderId, namespace, key, value, typeHint) {
+async function upsertOrderMetafield(orderId, namespace, key, value) {
   // 1) List existing metafields for this order
   const list = await shopifyFetch(`/orders/${orderId}/metafields.json`);
   const existing = (list.metafields || []).find(m => m.namespace === namespace && m.key === key);
 
   if (existing) {
-    // 2) Update existing metafield (do not force type; keep what's there)
+    // 2) Update existing metafield
     await shopifyFetch(`/metafields/${existing.id}.json`, {
       method: 'PUT',
       body: {
         metafield: {
           id: existing.id,
+          // Keep original type if present; otherwise specify a safe type
+          type: existing.type || 'single_line_text_field',
           value
         }
       }
     });
   } else {
-    // 3) Create the metafield on the order (use provided type hint or single-line by default)
+    // 3) Create the metafield on the order
     await shopifyFetch(`/orders/${orderId}/metafields.json`, {
       method: 'POST',
       body: {
         metafield: {
           namespace,
           key,
-          type: typeHint || 'single_line_text_field',
+          type: 'single_line_text_field',
           value
         }
       }
@@ -217,13 +219,6 @@ async function findOrderByName(orderNumber4Digits) {
     throw new Error(`Order C#${orderNumber4Digits} not found`);
   }
   return order;
-}
-
-// Fetch order tags as an array (Shopify returns a comma-separated string)
-async function fetchOrderTags(orderId) {
-  const data = await shopifyFetch(`/orders/${orderId}.json?fields=tags`);
-  const raw = data?.order?.tags || '';
-  return raw.split(',').map(t => t.trim()).filter(Boolean);
 }
 
 /* =========================
@@ -490,27 +485,6 @@ app.view('update_meta_modal_submit', async ({ ack, body, view, client, logger })
   // Validate conditional inputs
   try {
     const state = view.state.values;
-    // Extract core selections
-    const fulfillmentVal = state?.fulfillment_block?.fulfillment_radio?.selected_option?.value || 'ship';
-    const paymentVal = state?.payment_block?.payment_radio?.selected_option?.value || 'pif';
-
-    const fulfillmentLabel =
-      fulfillmentVal === 'install_pickup' ? 'Install/Pickup' :
-      fulfillmentVal === 'tbd' ? 'TBD' : 'Ship';
-
-    const paymentLabel =
-      paymentVal === 'deposit' ? 'Deposit' :
-      paymentVal === 'pif_prepaid_install' ? 'PIF + Pre-Paid Install' :
-      paymentVal === 'unpaid' ? 'Unpaid' :
-      paymentVal === 'unknown' ? 'Unknown' : 'PIF';
-
-    const partsSet = new Set(partsSelected); // from your existing partsSelected
-    const steeringWheelOn = partsSet.has('steering_wheel');
-    const trimOn          = partsSet.has('trim');
-    const paddlesOn       = partsSet.has('paddles');
-    const magPaddlesOn    = partsSet.has('magnetic_paddles');
-    const daModuleOn      = partsSet.has('da_module');
-    const returnLabelOn   = partsSet.has('return_label');
     const partsSelected = (state?.parts_block?.parts_check?.selected_options || []).map(o => o.value);
     const otherSelected = partsSelected.includes('other');
     const setAsideSelected = partsSelected.includes('set_aside');
@@ -548,75 +522,14 @@ app.view('update_meta_modal_submit', async ({ ack, body, view, client, logger })
       fulfillment: state?.fulfillment_block?.fulfillment_radio?.selected_option?.value || 'ship',
       payment: state?.payment_block?.payment_radio?.selected_option?.value || 'pif'
     };
-    // --- Begin Shopify metafield updates based on selections ---
-
-    const yesNo = (on, yes, no) => (on ? yes : no);
-
-    // 1) Parts (single line text)
-    const mfOps = [
-      upsertOrderMetafield(meta.orderId, 'custom', 'parts_steering_wheel',     yesNo(steeringWheelOn, 'Steering Wheel', 'No Steering Wheel')),
-      upsertOrderMetafield(meta.orderId, 'custom', 'parts_trim',               yesNo(trimOn,          'Trim',            'No Trim')),
-      upsertOrderMetafield(meta.orderId, 'custom', 'parts_paddles',            yesNo(paddlesOn,       'Paddles',         'No Paddles')),
-      upsertOrderMetafield(meta.orderId, 'custom', 'parts_magnetic_paddles',   yesNo(magPaddlesOn,    'Magnetic Paddles','No Magnetic Paddles')),
-      upsertOrderMetafield(meta.orderId, 'custom', 'parts_da_module',          yesNo(daModuleOn,      'DA Module',       'No DA Module')),
-      upsertOrderMetafield(meta.orderId, 'custom', 'parts_return_label',       yesNo(returnLabelOn,   'Return Label',    'No Return Label')),
-      upsertOrderMetafield(meta.orderId, 'custom', 'parts_other',              otherSelected ? (otherText || '') : ''),           // blank if not selected
-      upsertOrderMetafield(meta.orderId, 'custom', 'parts_set_aside_already',  setAsideSelected ? (setAsideText || '') : '')      // blank if not selected
-    ];
-
-    // 2) Fulfillment (single line text)
-    mfOps.push(upsertOrderMetafield(meta.orderId, 'custom', 'ship_install_pickup', fulfillmentLabel));
-
-    // 3) Payment (single line text)
-    mfOps.push(upsertOrderMetafield(meta.orderId, 'custom', 'pif_or_not', paymentLabel));
-
-    // 4) who_contacts = "Nick" (single line text)
-    mfOps.push(upsertOrderMetafield(meta.orderId, 'custom', 'who_contacts', 'Nick'));
-
-    // 5) parts_suppliers from tags starting with PartsSupplier_
-    const tags = await fetchOrderTags(meta.orderId);
-    const suppliers = tags
-      .filter(t => t.startsWith('PartsSupplier_'))
-      .map(t => t.substring('PartsSupplier_'.length))
-      .filter(Boolean);
-    const suppliersCsv = suppliers.join(', ');
-    mfOps.push(upsertOrderMetafield(meta.orderId, 'custom', 'parts_suppliers', suppliersCsv));
-
-    // 6) packing_slip_notes (multi-line text)
-    const partsListForLine3 = [];
-    if (steeringWheelOn) partsListForLine3.push('Steering Wheel');
-    if (trimOn)          partsListForLine3.push('Trim');
-    if (paddlesOn)       partsListForLine3.push('Paddles');
-    if (magPaddlesOn)    partsListForLine3.push('Magnetic Paddles');
-    if (daModuleOn)      partsListForLine3.push('DA Module');
-    if (returnLabelOn)   partsListForLine3.push('Return Label');
-    if (otherSelected && otherText) partsListForLine3.push(otherText);
-
-    let line3 = partsListForLine3.join(', ');
-    if (partsListForLine3.length === 1) {
-      line3 = `${partsListForLine3[0]} only`;
-    }
-
-    const line1 = `${fulfillmentLabel.toUpperCase()} — ${paymentLabel.toUpperCase()}`;
-    const line2 = ''; // blank spacer line
-    const line4 = setAsideSelected && setAsideText ? `Set Aside For Now: ${setAsideText}` : '';
-
-    const packingLines = [line1, line2, line3];
-    if (line4) packingLines.push(line4);
-    const packingSlipNotes = packingLines.join('\n');
-
-    // Use multi_line_text_field for creation
-    mfOps.push(upsertOrderMetafield(meta.orderId, 'custom', 'packing_slip_notes', packingSlipNotes, 'multi_line_text_field'));
-
-    // 7) initial_slack_tagging_done = "Yes"
-    mfOps.push(upsertOrderMetafield(meta.orderId, 'custom', 'initial_slack_tagging_done', 'Yes'));
-
-    // Execute all metafield writes in parallel
-    await Promise.all(mfOps);
-
-    // --- End metafield updates ---
     await writeJsonAtomic(filePath, snapshot);
 
+    // Mark initial Slack tagging as done in Shopify
+    try {
+      await upsertOrderMetafield(meta.orderId, 'custom', 'initial_slack_tagging_done', 'Yes');
+    } catch (e) {
+      logger.error('failed to upsert initial_slack_tagging_done metafield:', e);
+    }
 
     // Confirm in thread
     if (meta.channel && meta.thread_ts) {
