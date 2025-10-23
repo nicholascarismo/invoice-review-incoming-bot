@@ -108,6 +108,41 @@ async function fetchOrderMetafields(orderId) {
   return out;
 }
 
+// Create or update a single order metafield (REST)
+async function upsertOrderMetafield(orderId, namespace, key, value) {
+  // 1) List existing metafields for this order
+  const list = await shopifyFetch(`/orders/${orderId}/metafields.json`);
+  const existing = (list.metafields || []).find(m => m.namespace === namespace && m.key === key);
+
+  if (existing) {
+    // 2) Update existing metafield
+    await shopifyFetch(`/metafields/${existing.id}.json`, {
+      method: 'PUT',
+      body: {
+        metafield: {
+          id: existing.id,
+          // Keep original type if present; otherwise specify a safe type
+          type: existing.type || 'single_line_text_field',
+          value
+        }
+      }
+    });
+  } else {
+    // 3) Create the metafield on the order
+    await shopifyFetch(`/orders/${orderId}/metafields.json`, {
+      method: 'POST',
+      body: {
+        metafield: {
+          namespace,
+          key,
+          type: 'single_line_text_field',
+          value
+        }
+      }
+    });
+  }
+}
+
 // Build initial modal selections from metafields, following your exact rules
 function buildInitialsFromMetafields(mfMap) {
   const v = (k) => (mfMap[k] || '').trim();
@@ -488,6 +523,13 @@ app.view('update_meta_modal_submit', async ({ ack, body, view, client, logger })
       payment: state?.payment_block?.payment_radio?.selected_option?.value || 'pif'
     };
     await writeJsonAtomic(filePath, snapshot);
+
+    // Mark initial Slack tagging as done in Shopify
+    try {
+      await upsertOrderMetafield(meta.orderId, 'custom', 'initial_slack_tagging_done', 'Yes');
+    } catch (e) {
+      logger.error('failed to upsert initial_slack_tagging_done metafield:', e);
+    }
 
     // Confirm in thread
     if (meta.channel && meta.thread_ts) {
