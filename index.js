@@ -260,85 +260,130 @@ app.command('/ping', async ({ ack, respond, command, logger }) => {
   }
 });
 
+// /invoice-review -> open modal to collect a list of order numbers
+app.command('/invoice-review', async ({ ack, body, client, logger }) => {
+  await ack();
+  try {
+    await client.views.open({
+      trigger_id: body.trigger_id,
+      view: {
+        type: 'modal',
+        callback_id: 'invoice_review_collect_orders',
+        title: { type: 'plain_text', text: 'Invoice Review' },
+        submit: { type: 'plain_text', text: 'Confirm' },
+        close: { type: 'plain_text', text: 'Cancel' },
+        private_metadata: JSON.stringify({
+          channel: body.channel_id,
+          user: body.user_id
+        }),
+        blocks: [
+          {
+            type: 'input',
+            block_id: 'orders_block',
+            label: { type: 'plain_text', text: 'Paste order numbers (one per line)' },
+            element: {
+              type: 'plain_text_input',
+              action_id: 'orders_input',
+              multiline: true,
+              placeholder: { type: 'plain_text', text: 'e.g.\nC#1234\nC#1235\n1236' }
+            }
+          }
+        ]
+      }
+    });
+  } catch (e) {
+    logger.error('open /invoice-review modal failed:', e);
+  }
+});
+
 // Generic error logger
 app.error((e) => {
   console.error('⚠️ Bolt error:', e?.message || e);
 });
 
-/* =========================
-   Message Listener
-========================= */
-// Matches "C#1234" at start (optionally preceded by whitespace)
-const ORDER_REGEX = /^\s*C#(\d{4})\b/;
 
-app.event('message', async ({ event, client, logger, say }) => {
+// Parse the list of order numbers, post a parent message, then one thread reply per order with the existing button
+app.view('invoice_review_collect_orders', async ({ ack, body, view, client, logger }) => {
+  await ack();
+
   try {
-    // Only public channel messages we care about; ignore thread broadcasts, edits, etc.
-    if (!event || event.hidden || event.subtype === 'message_changed' || event.subtype === 'message_deleted') return;
-    if (WATCH_CHANNEL_ID && event.channel !== WATCH_CHANNEL_ID) return;
+    const md = JSON.parse(view.private_metadata || '{}');
+    const channel = md.channel;
 
-    const text = (event.text || '').trim();
-    const m = text.match(ORDER_REGEX);
-    if (!m) return;
+    // 1) Parse the textarea into unique order digits
+    const raw = view.state.values?.orders_block?.orders_input?.value || '';
+    const lines = raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
 
-    // Confirm message is from FlowBot (either by exact user ID or bot profile name)
-    const isFromFlowBotById = FLOWBOT_USER_ID && event.user === FLOWBOT_USER_ID;
-    const isFromFlowBotByName =
-      event?.bot_profile?.name === 'FlowBot' ||
-      event?.username === 'FlowBot' ||
-      event?.bot_profile?.display_name === 'FlowBot';
+    // Accept formats like "C#1234" or "1234". (Your findOrderByName expects 4 digits.)
+    const orderDigits = Array.from(new Set(
+      lines
+        .map(s => (s.match(/(\d{4})/) || [,''])[1])  // extract 4 digits if present
+        .filter(Boolean)
+    ));
 
-    if (!(isFromFlowBotById || isFromFlowBotByName)) return;
-
-    const orderDigits = m[1]; // "1234"
-    let order;
-    try {
-      order = await findOrderByName(orderDigits);
-    } catch (err) {
-      logger.error(err);
-      // Reply in thread with not found
-      await client.chat.postMessage({
-        channel: event.channel,
-        thread_ts: event.ts,
-        text: `Order C#${orderDigits} not found in Shopify.`
+    if (!orderDigits.length) {
+      await client.chat.postEphemeral({
+        channel,
+        user: md.user,
+        text: 'No valid 4-digit order numbers found.'
       });
       return;
     }
 
-    const customerName =
-      order?.customer ? `${order.customer.first_name || ''} ${order.customer.last_name || ''}`.trim() :
-      (order?.shipping_address ? `${order.shipping_address.first_name || ''} ${order.shipping_address.last_name || ''}`.trim() : 'Unknown');
+    // 2) Post a parent (root) message
+    const parent = await client.chat.postMessage({
+      channel,
+      text: `Invoice review started for ${orderDigits.length} order(s) by <@${md.user}>`
+    });
+    const root_ts = parent.ts;
 
-    // Post thread reply with "Update Metafields" button
-    await client.chat.postMessage({
-      channel: event.channel,
-      thread_ts: event.ts,
-      text: `Order C#${orderDigits} Found - ${customerName || 'Unknown'}`,
-blocks: [
-  {
-    type: 'section',
-    text: { type: 'mrkdwn', text: `*Order C#${orderDigits}* Found — *${customerName || 'Unknown'}*` }
-  },
-        {
-          type: 'actions',
-          elements: [
+    // 3) For each order: look it up and post a thread reply with the **Update Metafields** button
+    for (const digits of orderDigits) {
+      try {
+        const order = await findOrderByName(digits);
+
+        const customerName =
+          order?.customer ? `${order.customer.first_name || ''} ${order.customer.last_name || ''}`.trim() :
+          (order?.shipping_address ? `${order.shipping_address.first_name || ''} ${order.shipping_address.last_name || ''}`.trim() : 'Unknown');
+
+        await client.chat.postMessage({
+          channel,
+          thread_ts: root_ts,
+          text: `Order C#${digits} Found - ${customerName || 'Unknown'}`,
+          blocks: [
             {
-              type: 'button',
-              text: { type: 'plain_text', text: 'Update Metafields', emoji: true },
-              action_id: 'open_update_modal',
-              value: JSON.stringify({
-                orderDigits: orderDigits,
-                orderId: order.id,
-                channel: event.channel,
-                thread_ts: event.ts
-              })
+              type: 'section',
+              text: { type: 'mrkdwn', text: `*Order C#${digits}* Found — *${customerName || 'Unknown'}*` }
+            },
+            {
+              type: 'actions',
+              elements: [
+                {
+                  type: 'button',
+                  text: { type: 'plain_text', text: 'Update Metafields', emoji: true },
+                  action_id: 'open_update_modal',
+                  value: JSON.stringify({
+                    orderDigits: digits,
+                    orderId: order.id,
+                    channel,
+                    thread_ts: root_ts
+                  })
+                }
+              ]
             }
           ]
-        }
-      ]
-    });
+        });
+      } catch (err) {
+        logger.error(`Order C#${digits} lookup failed:`, err);
+        await client.chat.postMessage({
+          channel,
+          thread_ts: root_ts,
+          text: `❌ Order C#${digits} not found in Shopify.`
+        });
+      }
+    }
   } catch (e) {
-    console.error('message handler error:', e?.message || e);
+    logger.error('invoice_review_collect_orders error:', e);
   }
 });
 
