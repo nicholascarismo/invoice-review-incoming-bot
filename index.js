@@ -771,9 +771,9 @@ app.action('open_update_modal_bulk', async ({ ack, body, client, logger, action 
 
     orderBlocks.push({ type: 'divider' });
     orderBlocks.push({
-      type: 'section',
-      text: { type: 'mrkdwn', text: `*Order C#${o.digits}* — *${o.customerName || 'Unknown'}*` }
-    });
+  type: 'header',
+  text: { type: 'plain_text', text: `Order C#${o.digits} • ${o.customerName || 'Unknown'}` }
+});
     orderBlocks.push({
       type: 'input',
       block_id: `parts_block_${o.digits}`,
@@ -847,11 +847,12 @@ app.action('open_update_modal_bulk', async ({ ack, body, client, logger, action 
         ]
       }
     });
+orderBlocks.push({ type: 'divider' });
   }
 
-  const invoiceHeader = (invoiceSupplier || invoiceDate)
-    ? `Invoice: ${[invoiceSupplier, invoiceDate].filter(Boolean).join(' — ')}`
-    : 'Invoice Review';
+const invoiceHeader = (invoiceSupplier || invoiceDate)
+  ? `${[invoiceSupplier, invoiceDate].filter(Boolean).join(' ')} Invoice`
+  : 'Invoice Review';
 
   // Compose final blocks with header + optional clipped note + per-order blocks
   const finalBlocks = [
