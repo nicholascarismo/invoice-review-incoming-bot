@@ -320,15 +320,15 @@ app.view('invoice_review_collect_orders', async ({ ack, body, view, client, logg
   try {
     const md = JSON.parse(view.private_metadata || '{}');
     const channel = md.channel;
-const invoiceName = (view.state.values?.invoice_block?.invoice_input?.value || '').trim();
+    const invoiceName = (view.state.values?.invoice_block?.invoice_input?.value || '').trim();
 
     // 1) Parse the textarea into unique order digits
     const raw = view.state.values?.orders_block?.orders_input?.value || '';
-    const lines = raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    const inputLines = raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
 
     // Accept formats like "C#1234" or "1234". (Your findOrderByName expects 4 digits.)
     const orderDigits = Array.from(new Set(
-      lines
+      inputLines
         .map(s => (s.match(/(\d{4})/) || [,''])[1])  // extract 4 digits if present
         .filter(Boolean)
     ));
@@ -343,104 +343,94 @@ const invoiceName = (view.state.values?.invoice_block?.invoice_input?.value || '
     }
 
     // 2) Look up all orders now (to show summary and to carry IDs forward)
-const found = [];   // [{digits, id, customerName}]
-const failed = [];  // [digits]
+    const found = [];   // [{digits, id, customerName}]
+    const failed = [];  // [digits]
 
-for (const digits of orderDigits) {
-  try {
-    const order = await findOrderByName(digits);
-    const customerName =
-      order?.customer ? `${order.customer.first_name || ''} ${order.customer.last_name || ''}`.trim() :
-      (order?.shipping_address ? `${order.shipping_address.first_name || ''} ${order.shipping_address.last_name || ''}`.trim() : 'Unknown');
+    for (const digits of orderDigits) {
+      try {
+        const order = await findOrderByName(digits);
+        const customerName =
+          order?.customer ? `${order.customer.first_name || ''} ${order.customer.last_name || ''}`.trim() :
+          (order?.shipping_address ? `${order.shipping_address.first_name || ''} ${order.shipping_address.last_name || ''}`.trim() : 'Unknown');
 
-    found.push({ digits, id: order.id, customerName });
-  } catch (err) {
-    logger.error(`Order C#${digits} lookup failed:`, err);
-    failed.push(digits);
-  }
-}
-
-if (!found.length) {
-  await client.chat.postEphemeral({
-    channel,
-    user: md.user,
-    text: failed.length
-      ? `No orders found. Failed lookups: ${failed.map(d => `C#${d}`).join(', ')}`
-      : 'No orders found.'
-  });
-  return;
-}
-
-// 3) Post a single parent (root) message with summary + one button
-const lines = [];
-lines.push(`Invoice review started for ${found.length} order(s) by <@${md.user}>`);
-if (invoiceName) lines.push(`*Invoice:* ${invoiceName}`);
-lines.push('');
-lines.push('*Orders:*');
-for (const o of found) {
-  lines.push(`• C#${o.digits} — ${o.customerName || 'Unknown'}`);
-}
-if (failed.length) {
-  lines.push('');
-  lines.push(`⚠️ Not found: ${failed.map(d => `C#${d}`).join(', ')}`);
-}
-
-const parent = await client.chat.postMessage({
-  channel,
-  text: lines.join('\n'),
-  blocks: [
-    { type: 'section', text: { type: 'mrkdwn', text: lines.join('\n') } },
-    {
-      type: 'actions',
-      elements: [
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: 'Update Metafields (All)', emoji: true },
-          action_id: 'open_update_modal_bulk',
-          value: JSON.stringify({
-            channel,
-            thread_ts: undefined, // will set after post
-            invoiceName: invoiceName || '',
-            orders: found // carry [{digits,id,customerName}]
-          })
-        }
-      ]
-    }
-  ]
-});
-
-// Patch the just-posted message’s button value to include the actual thread_ts
-const root_ts = parent.ts;
-const patched = parent.message?.blocks || parent.blocks || [];
-for (const b of patched) {
-  if (b.type === 'actions') {
-    for (const el of b.elements || []) {
-      if (el.type === 'button' && el.action_id === 'open_update_modal_bulk') {
-        const v = JSON.parse(el.value || '{}');
-        v.thread_ts = root_ts;
-        el.value = JSON.stringify(v);
-      }
-    }
-  }
-}
-// Update the message so the button carries the real thread_ts
-await client.chat.update({
-  channel,
-  ts: root_ts,
-  text: lines.join('\n'),
-  blocks: patched
-});
-
-
+        found.push({ digits, id: order.id, customerName });
       } catch (err) {
         logger.error(`Order C#${digits} lookup failed:`, err);
-        await client.chat.postMessage({
-          channel,
-          thread_ts: root_ts,
-          text: `❌ Order C#${digits} not found in Shopify.`
-        });
+        failed.push(digits);
       }
     }
+
+    if (!found.length) {
+      await client.chat.postEphemeral({
+        channel,
+        user: md.user,
+        text: failed.length
+          ? `No orders found. Failed lookups: ${failed.map(d => `C#${d}`).join(', ')}`
+          : 'No orders found.'
+      });
+      return;
+    }
+
+    // 3) Post a single parent (root) message with summary + one button
+    const msgLines = [];
+    msgLines.push(`Invoice review started for ${found.length} order(s) by <@${md.user}>`);
+    if (invoiceName) msgLines.push(`*Invoice:* ${invoiceName}`);
+    msgLines.push('');
+    msgLines.push('*Orders:*');
+    for (const o of found) {
+      msgLines.push(`• C#${o.digits} — ${o.customerName || 'Unknown'}`);
+    }
+    if (failed.length) {
+      msgLines.push('');
+      msgLines.push(`⚠️ Not found: ${failed.map(d => `C#${d}`).join(', ')}`);
+    }
+
+    const parent = await client.chat.postMessage({
+      channel,
+      text: msgLines.join('\n'),
+      blocks: [
+        { type: 'section', text: { type: 'mrkdwn', text: msgLines.join('\n') } },
+        {
+          type: 'actions',
+          elements: [
+            {
+              type: 'button',
+              text: { type: 'plain_text', text: 'Update Metafields (All)', emoji: true },
+              action_id: 'open_update_modal_bulk',
+              value: JSON.stringify({
+                channel,
+                thread_ts: undefined, // will set after post
+                invoiceName: invoiceName || '',
+                orders: found // carry [{digits,id,customerName}]
+              })
+            }
+          ]
+        }
+      ]
+    });
+
+    // Patch the just-posted message’s button value to include the actual thread_ts
+    const root_ts = parent.ts;
+    const patched = parent.message?.blocks || parent.blocks || [];
+    for (const b of patched) {
+      if (b.type === 'actions') {
+        for (const el of b.elements || []) {
+          if (el.type === 'button' && el.action_id === 'open_update_modal_bulk') {
+            const v = JSON.parse(el.value || '{}');
+            v.thread_ts = root_ts;
+            el.value = JSON.stringify(v);
+          }
+        }
+      }
+    }
+    // Update the message so the button carries the real thread_ts
+    await client.chat.update({
+      channel,
+      ts: root_ts,
+      text: msgLines.join('\n'),
+      blocks: patched
+    });
+
   } catch (e) {
     logger.error('invoice_review_collect_orders error:', e);
   }
