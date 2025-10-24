@@ -1022,8 +1022,26 @@ if (setAsideSelected && (setAsideText || '').trim() !== '') {
     // 3) Payment (single line text)
     mfOps.push(upsertOrderMetafield(meta.orderId, 'custom', 'pif_or_not', paymentLabel));
 
-    // 4) who_contacts = "Nick" (single line text)
-    mfOps.push(upsertOrderMetafield(meta.orderId, 'custom', 'who_contacts', 'Nick'));
+    // 4) who_contacts computed by priority rules (single line text)
+    // Priority:
+    // 1) custom.platform === "Direct KZ" -> "Kirill"
+    // 2) has order tag "MarketingSponsorship" -> "Irish"
+    // 3) custom.kl_status in {"KL-UP","KL-P"} -> "Kenny"
+    // 4) default -> "Nick"
+    const __mfMap_for_who = await fetchOrderMetafields(meta.orderId);
+    const __tags_for_who = await fetchOrderTags(meta.orderId);
+    let __whoContacts = 'Nick';
+    if ((__mfMap_for_who['custom.platform'] || '').trim() === 'Direct KZ') {
+      __whoContacts = 'Kirill';
+    } else if (__tags_for_who.includes('MarketingSponsorship')) {
+      __whoContacts = 'Irish';
+    } else {
+      const __kl = (__mfMap_for_who['custom.kl_status'] || '').trim();
+      if (__kl === 'KL-UP' || __kl === 'KL-P') {
+        __whoContacts = 'Kenny';
+      }
+    }
+    mfOps.push(upsertOrderMetafield(meta.orderId, 'custom', 'who_contacts', __whoContacts));
 
     // 5) parts_suppliers from tags starting with PartsSupplier_
     const tags = await fetchOrderTags(meta.orderId);
@@ -1262,6 +1280,23 @@ if (line4) {
 }
 const packingSlipNotes = packingLines.join('\n');
 
+    // Compute who_contacts by priority rules
+    // 1) custom.platform === "Direct KZ" -> "Kirill"
+    // 2) has order tag "MarketingSponsorship" -> "Irish"
+    // 3) custom.kl_status in {"KL-UP","KL-P"} -> "Kenny"
+    // 4) default -> "Nick"
+    let __whoContacts_bulk = 'Nick';
+    if ((mfMap['custom.platform'] || '').trim() === 'Direct KZ') {
+      __whoContacts_bulk = 'Kirill';
+    } else if (tags.includes('MarketingSponsorship')) {
+      __whoContacts_bulk = 'Irish';
+    } else {
+      const __klb = (mfMap['custom.kl_status'] || '').trim();
+      if (__klb === 'KL-UP' || __klb === 'KL-P') {
+        __whoContacts_bulk = 'Kenny';
+      }
+    }
+
     mfOps.push(
     upsertOrderMetafield(o.id, 'custom', 'parts_steering_wheel',   yesNo(steeringWheelOn, 'Steering Wheel', 'No Steering Wheel')),
     upsertOrderMetafield(o.id, 'custom', 'parts_trim',             yesNo(trimOn,          'Trim',            'No Trim')),
@@ -1271,7 +1306,7 @@ const packingSlipNotes = packingLines.join('\n');
     upsertOrderMetafield(o.id, 'custom', 'parts_return_label',     yesNo(returnLabelOn,   'Return Label',    'No Return Label')),
     upsertOrderMetafield(o.id, 'custom', 'ship_install_pickup',    p.fulfillmentLabel),
     upsertOrderMetafield(o.id, 'custom', 'pif_or_not',             p.paymentLabel),
-    upsertOrderMetafield(o.id, 'custom', 'who_contacts',           'Nick'),
+    upsertOrderMetafield(o.id, 'custom', 'who_contacts',           __whoContacts_bulk),
     upsertOrderMetafield(o.id, 'custom', 'packing_slip_notes',     packingSlipNotes, 'multi_line_text_field'),
     upsertOrderMetafield(o.id, 'custom', 'initial_slack_tagging_done', 'Yes')
   );
