@@ -1159,6 +1159,7 @@ const yesNo = (on, yes, no) => (on ? yes : no);
 
 // Process ONE order at a time to avoid Shopify 429s
 const results = await runWithConcurrency(1, orders, async (o) => {
+  try {
   const p = parseOne(state, o.digits);
   const set = new Set(p.partsSelected);
 
@@ -1332,27 +1333,64 @@ await updateOrderNote(o.id, newNote);
   });
 
   return { ok: true, id: o.digits };
+} catch (e) {
+  logger?.error?.('bulk worker failed for order', { order_digits: o.digits, order_id: o.id, error: e });
+  console.error('bulk worker failed for order', o, e);
+  return { ok: false, id: o.digits, error: (e && e.message) ? e.message : String(e) };
+}
 });
 
-// Collate successes/failures
+// Collate successes/failures with reasons
 const ok = [];
 const fail = [];
+const failDetails = [];
+
 results.forEach((r, idx) => {
-  if (r && r.ok) ok.push(`C#${r.id}`);
-  else fail.push(`C#${orders[idx].digits}`);
+  if (r && r.ok) {
+    ok.push(`C#${r.id}`);
+  } else {
+    const digits = orders[idx].digits;
+    fail.push(`C#${digits}`);
+    const reason = (r && r.error) ? r.error
+                  : (r && r.message) ? r.message
+                  : 'Unknown error';
+    const line = `C#${digits}: ${reason}`;
+    failDetails.push(line);
+
+    // Log to PM2/stdout with structured context
+    console.error('invoice bulk failed', {
+      order_digits: digits,
+      order_id: orders[idx].id,
+      reason
+    });
+    logger?.error?.('invoice bulk failed', {
+      order_digits: digits,
+      order_id: orders[idx].id,
+      reason
+    });
+  }
 });
 
-  // Confirm in thread
-  if (channel && thread_ts) {
-    const lines = [];
-    if (ok.length)  lines.push(`✅ Updated: ${ok.join(', ')}`);
-    if (fail.length) lines.push(`❌ Failed: ${fail.join(', ')}`);
+// Confirm in thread (summary)
+if (channel && thread_ts) {
+  const lines = [];
+  if (ok.length)   lines.push(`✅ Updated: ${ok.join(', ')}`);
+  if (fail.length) lines.push(`❌ Failed: ${fail.join(', ')}`);
+  await client.chat.postMessage({
+    channel,
+    thread_ts,
+    text: lines.join('\n') || 'Done.'
+  });
+
+  // Post detailed reasons as a follow-up (code block), if any
+  if (failDetails.length) {
     await client.chat.postMessage({
       channel,
       thread_ts,
-      text: lines.join('\n') || 'Done.'
+      text: '*Failure details:*\n```' + failDetails.join('\n') + '```'
     });
   }
+}
 });
 
 /* =========================
