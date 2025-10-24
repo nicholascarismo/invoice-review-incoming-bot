@@ -1070,6 +1070,9 @@ const packingSlipNotes = packingLines.join('\n');
     // 7) initial_slack_tagging_done = "Yes"
     mfOps.push(upsertOrderMetafield(meta.orderId, 'custom', 'initial_slack_tagging_done', 'Yes'));
 
+// 7b) _nc_incoming_ = "INCOMING"
+mfOps.push(upsertOrderMetafield(meta.orderId, 'custom', '_nc_incoming_', 'INCOMING'));
+
     // Execute all metafield writes in parallel
     for (const op of mfOps) {
   await op;
@@ -1211,13 +1214,13 @@ if (currentArrangedWith) {
   }
 }
 
-// 3) Set custom.nc_incoming => "INCOMING" (always), and also update any other *nc_incoming* variants if present
-mfOps.push(upsertOrderMetafield(o.id, 'custom', 'nc_incoming', 'INCOMING'));
+// 3) Set custom._nc_incoming_ => "INCOMING" (always), and also update any other *_nc_incoming_* variants if present
+mfOps.push(upsertOrderMetafield(o.id, 'custom', '_nc_incoming_', 'INCOMING'));
 
 const incomingKeys = Object.keys(mfMap)
-  .filter(k => k.startsWith('custom.') && k.includes('nc_incoming'))
+  .filter(k => k.startsWith('custom.') && k.includes('_nc_incoming_'))
   .map(k => k.split('.')[1]) // keep only the key part
-  .filter(k => k !== 'nc_incoming'); // we've already set the canonical key above
+  .filter(k => k !== '_nc_incoming_'); // we've already set the canonical key above
 for (const k of incomingKeys) {
   mfOps.push(upsertOrderMetafield(o.id, 'custom', k, 'INCOMING'));
 }
