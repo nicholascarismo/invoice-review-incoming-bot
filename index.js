@@ -59,6 +59,28 @@ async function readJsonSafe(filePath, fallback = null) {
   }
 }
 
+// Run a worker over an array with a max concurrency
+async function runWithConcurrency(max, items, worker) {
+  const results = new Array(items.length);
+  let i = 0;
+
+  async function runner() {
+    while (true) {
+      const idx = i++;
+      if (idx >= items.length) break;
+      try {
+        results[idx] = await worker(items[idx], idx);
+      } catch (err) {
+        results[idx] = err;
+      }
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(max, items.length) }, runner);
+  await Promise.all(workers);
+  return results;
+}
+
 /* =========================
    Shopify Helpers
 ========================= */
@@ -285,7 +307,7 @@ app.command('/invoice-review', async ({ ack, body, client, logger }) => {
       type: 'plain_text_input',
       action_id: 'invoice_input',
       multiline: false,
-      placeholder: { type: 'plain_text', text: 'e.g. INV-2025-001 or “January Install Batch”' }
+      placeholder: { type: 'plain_text', text: 'e.g. OHC 10-23 or Bospeed 8-1' }
     }
   },
   {
@@ -296,7 +318,7 @@ app.command('/invoice-review', async ({ ack, body, client, logger }) => {
       type: 'plain_text_input',
       action_id: 'orders_input',
       multiline: true,
-      placeholder: { type: 'plain_text', text: 'e.g.\nC#1234\nC#1235\n1236' }
+      placeholder: { type: 'plain_text', text: 'e.g.\nC#1234\nC#1235\nC#1236' }
     }
   }
 ]
@@ -912,7 +934,9 @@ if (suppliersCsv) {
     mfOps.push(upsertOrderMetafield(meta.orderId, 'custom', 'initial_slack_tagging_done', 'Yes'));
 
     // Execute all metafield writes in parallel
-    await Promise.all(mfOps);
+    for (const op of mfOps) {
+  await op;
+}
 
     // --- End metafield updates ---
     await writeJsonAtomic(filePath, snapshot);
@@ -993,109 +1017,114 @@ app.view('update_meta_modal_submit_bulk', async ({ ack, body, view, client, logg
 
   await ack();
 
-  // Save per order (parallel, but not too wide)
-  const yesNo = (on, yes, no) => (on ? yes : no);
-  const tasks = orders.map(async (o) => {
-    const p = parseOne(state, o.digits);
-    const set = new Set(p.partsSelected);
+// Save per order with limited concurrency and sequential metafield writes per order
+const yesNo = (on, yes, no) => (on ? yes : no);
 
-    const steeringWheelOn = set.has('steering_wheel');
-    const trimOn          = set.has('trim');
-    const paddlesOn       = set.has('paddles');
-    const magPaddlesOn    = set.has('magnetic_paddles');
-    const daModuleOn      = set.has('da_module');
-    const returnLabelOn   = set.has('return_label');
-    const otherSelected    = set.has('other');
-    const setAsideSelected = set.has('set_aside');
+// Process up to 2 orders at a time to avoid Shopify 429s
+const results = await runWithConcurrency(2, orders, async (o) => {
+  const p = parseOne(state, o.digits);
+  const set = new Set(p.partsSelected);
 
-    // 5) parts_suppliers from tags starting with PartsSupplier_
-    const tags = await fetchOrderTags(o.id);
-    const suppliers = tags
-      .filter(t => t.startsWith('PartsSupplier_'))
-      .map(t => t.substring('PartsSupplier_'.length))
-      .filter(Boolean);
-    const suppliersCsv = suppliers.join(', ');
+  const steeringWheelOn = set.has('steering_wheel');
+  const trimOn          = set.has('trim');
+  const paddlesOn       = set.has('paddles');
+  const magPaddlesOn    = set.has('magnetic_paddles');
+  const daModuleOn      = set.has('da_module');
+  const returnLabelOn   = set.has('return_label');
+  const otherSelected    = set.has('other');
+  const setAsideSelected = set.has('set_aside');
 
-    // 6) packing_slip_notes (multi-line text)
-    const partsListForLine3 = [];
-    if (steeringWheelOn) partsListForLine3.push('Steering Wheel');
-    if (trimOn)          partsListForLine3.push('Trim');
-    if (paddlesOn)       partsListForLine3.push('Paddles');
-    if (magPaddlesOn)    partsListForLine3.push('Magnetic Paddles');
-    if (daModuleOn)      partsListForLine3.push('DA Module');
-    if (returnLabelOn)   partsListForLine3.push('Return Label');
-    if (otherSelected && p.otherText) partsListForLine3.push(p.otherText);
+  // 5) parts_suppliers from tags starting with PartsSupplier_
+  const tags = await fetchOrderTags(o.id);
+  const suppliers = tags
+    .filter(t => t.startsWith('PartsSupplier_'))
+    .map(t => t.substring('PartsSupplier_'.length))
+    .filter(Boolean);
+  const suppliersCsv = suppliers.join(', ');
 
-    let line3 = partsListForLine3.join(', ');
-    if (partsListForLine3.length === 1) line3 = `${partsListForLine3[0]} only`;
+  // 6) packing_slip_notes (multi-line text)
+  const partsListForLine3 = [];
+  if (steeringWheelOn) partsListForLine3.push('Steering Wheel');
+  if (trimOn)          partsListForLine3.push('Trim');
+  if (paddlesOn)       partsListForLine3.push('Paddles');
+  if (magPaddlesOn)    partsListForLine3.push('Magnetic Paddles');
+  if (daModuleOn)      partsListForLine3.push('DA Module');
+  if (returnLabelOn)   partsListForLine3.push('Return Label');
+  if (otherSelected && p.otherText) partsListForLine3.push(p.otherText);
 
-    const line1 = `${p.fulfillmentLabel.toUpperCase()} — ${p.paymentLabel.toUpperCase()}`;
-    const line2 = '';
-    const line4 = setAsideSelected && p.setAsideText ? `Set Aside For Now: ${p.setAsideText}` : '';
-    const packingLines = [line1, line2, line3];
-    if (line4) packingLines.push(line4);
-    const packingSlipNotes = packingLines.join('\n');
+  let line3 = partsListForLine3.join(', ');
+  if (partsListForLine3.length === 1) line3 = `${partsListForLine3[0]} only`;
 
-    const mfOps = [
-      upsertOrderMetafield(o.id, 'custom', 'parts_steering_wheel',   yesNo(steeringWheelOn, 'Steering Wheel', 'No Steering Wheel')),
-      upsertOrderMetafield(o.id, 'custom', 'parts_trim',             yesNo(trimOn,          'Trim',            'No Trim')),
-      upsertOrderMetafield(o.id, 'custom', 'parts_paddles',          yesNo(paddlesOn,       'Paddles',         'No Paddles')),
-      upsertOrderMetafield(o.id, 'custom', 'parts_magnetic_paddles', yesNo(magPaddlesOn,    'Magnetic Paddles','No Magnetic Paddles')),
-      upsertOrderMetafield(o.id, 'custom', 'parts_da_module',        yesNo(daModuleOn,      'DA Module',       'No DA Module')),
-      upsertOrderMetafield(o.id, 'custom', 'parts_return_label',     yesNo(returnLabelOn,   'Return Label',    'No Return Label')),
-      upsertOrderMetafield(o.id, 'custom', 'ship_install_pickup',    p.fulfillmentLabel),
-      upsertOrderMetafield(o.id, 'custom', 'pif_or_not',             p.paymentLabel),
-      upsertOrderMetafield(o.id, 'custom', 'who_contacts',           'Nick'),
-      upsertOrderMetafield(o.id, 'custom', 'packing_slip_notes',     packingSlipNotes, 'multi_line_text_field'),
-      upsertOrderMetafield(o.id, 'custom', 'initial_slack_tagging_done', 'Yes')
-    ];
+  const line1 = `${p.fulfillmentLabel.toUpperCase()} — ${p.paymentLabel.toUpperCase()}`;
+  const line2 = '';
+  const line4 = setAsideSelected && p.setAsideText ? `Set Aside For Now: ${p.setAsideText}` : '';
+  const packingLines = [line1, line2, line3];
+  if (line4) packingLines.push(line4);
+  const packingSlipNotes = packingLines.join('\n');
 
-    if (otherSelected && (p.otherText || '').trim() !== '') {
-      mfOps.push(upsertOrderMetafield(o.id, 'custom', 'parts_other', (p.otherText || '').trim()));
-    } else {
-      mfOps.push(deleteOrderMetafield(o.id, 'custom', 'parts_other'));
-    }
+  const mfOps = [
+    upsertOrderMetafield(o.id, 'custom', 'parts_steering_wheel',   yesNo(steeringWheelOn, 'Steering Wheel', 'No Steering Wheel')),
+    upsertOrderMetafield(o.id, 'custom', 'parts_trim',             yesNo(trimOn,          'Trim',            'No Trim')),
+    upsertOrderMetafield(o.id, 'custom', 'parts_paddles',          yesNo(paddlesOn,       'Paddles',         'No Paddles')),
+    upsertOrderMetafield(o.id, 'custom', 'parts_magnetic_paddles', yesNo(magPaddlesOn,    'Magnetic Paddles','No Magnetic Paddles')),
+    upsertOrderMetafield(o.id, 'custom', 'parts_da_module',        yesNo(daModuleOn,      'DA Module',       'No DA Module')),
+    upsertOrderMetafield(o.id, 'custom', 'parts_return_label',     yesNo(returnLabelOn,   'Return Label',    'No Return Label')),
+    upsertOrderMetafield(o.id, 'custom', 'ship_install_pickup',    p.fulfillmentLabel),
+    upsertOrderMetafield(o.id, 'custom', 'pif_or_not',             p.paymentLabel),
+    upsertOrderMetafield(o.id, 'custom', 'who_contacts',           'Nick'),
+    upsertOrderMetafield(o.id, 'custom', 'packing_slip_notes',     packingSlipNotes, 'multi_line_text_field'),
+    upsertOrderMetafield(o.id, 'custom', 'initial_slack_tagging_done', 'Yes')
+  ];
 
-    if (setAsideSelected && (p.setAsideText || '').trim() !== '') {
-      mfOps.push(upsertOrderMetafield(o.id, 'custom', 'parts_set_aside_already', (p.setAsideText || '').trim()));
-    } else {
-      mfOps.push(deleteOrderMetafield(o.id, 'custom', 'parts_set_aside_already'));
-    }
+  if (otherSelected && (p.otherText || '').trim() !== '') {
+    mfOps.push(upsertOrderMetafield(o.id, 'custom', 'parts_other', (p.otherText || '').trim()));
+  } else {
+    mfOps.push(deleteOrderMetafield(o.id, 'custom', 'parts_other'));
+  }
 
-    if (suppliersCsv) {
-      mfOps.push(upsertOrderMetafield(o.id, 'custom', 'parts_suppliers', suppliersCsv));
-    } else {
-      mfOps.push(deleteOrderMetafield(o.id, 'custom', 'parts_suppliers'));
-    }
+  if (setAsideSelected && (p.setAsideText || '').trim() !== '') {
+    mfOps.push(upsertOrderMetafield(o.id, 'custom', 'parts_set_aside_already', (p.setAsideText || '').trim()));
+  } else {
+    mfOps.push(deleteOrderMetafield(o.id, 'custom', 'parts_set_aside_already'));
+  }
 
-    await Promise.all(mfOps);
+  if (suppliersCsv) {
+    mfOps.push(upsertOrderMetafield(o.id, 'custom', 'parts_suppliers', suppliersCsv));
+  } else {
+    mfOps.push(deleteOrderMetafield(o.id, 'custom', 'parts_suppliers'));
+  }
 
-    // Persist a tiny snapshot file per order (like your single-order flow)
-    await ensureDirs();
-    const filePath = path.join(ORDERS_DIR, `${o.digits}.json`);
-    await writeJsonAtomic(filePath, {
-      saved_at: new Date().toISOString(),
-      order_id: o.id,
-      order_digits: o.digits,
-      parts: {
-        selections: Array.from(set),
-        other_text: p.otherText || null,
-        set_aside_text: p.setAsideText || null
-      },
-      fulfillment: p.fulfillmentVal,
-      payment: p.paymentVal
-    });
+  // SEQUENTIAL writes per order to avoid burst 429s
+  for (const op of mfOps) {
+    await op;
+  }
 
-    return `C#${o.digits}`;
+  // Persist a tiny snapshot file per order
+  await ensureDirs();
+  const filePath = path.join(ORDERS_DIR, `${o.digits}.json`);
+  await writeJsonAtomic(filePath, {
+    saved_at: new Date().toISOString(),
+    order_id: o.id,
+    order_digits: o.digits,
+    parts: {
+      selections: Array.from(set),
+      other_text: p.otherText || null,
+      set_aside_text: p.setAsideText || null
+    },
+    fulfillment: p.fulfillmentVal,
+    payment: p.paymentVal
   });
 
-  let ok = [];
-  let fail = [];
-  const results = await Promise.allSettled(tasks);
-  results.forEach((r, i) => {
-    if (r.status === 'fulfilled') ok.push(r.value);
-    else fail.push(`C#${orders[i].digits}`);
-  });
+  return { ok: true, id: o.digits };
+});
+
+// Collate successes/failures
+const ok = [];
+const fail = [];
+results.forEach((r, idx) => {
+  if (r && r.ok) ok.push(`C#${r.id}`);
+  else fail.push(`C#${orders[idx].digits}`);
+});
 
   // Confirm in thread
   if (channel && thread_ts) {
