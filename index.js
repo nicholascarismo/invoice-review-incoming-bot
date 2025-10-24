@@ -624,20 +624,29 @@ app.action('open_update_modal', async ({ ack, body, client, logger, action }) =>
 app.action('open_update_modal_bulk', async ({ ack, body, client, logger, action }) => {
   await ack();
 
-  // Parse payload from the single button
-  let payload = { channel: '', thread_ts: '', invoiceName: '', orders: [] };
-  try { payload = JSON.parse(action.value || '{}'); } catch (_) {}
+// Parse payload right away
+let payload = { channel: '', thread_ts: '', invoiceName: '', orders: [] };
+try { payload = JSON.parse(action.value || '{}'); } catch (_) {}
+const { channel, thread_ts, invoiceName, orders } = payload;
 
-  const { channel, thread_ts, invoiceName, orders } = payload;
-  if (!orders?.length) {
-    // Defensive guard
-    await client.chat.postMessage({
-      channel,
-      thread_ts,
-      text: 'No orders to edit.'
-    });
-    return;
+// Immediately open a "Loading..." modal (this uses the live trigger_id)
+await client.views.open({
+  trigger_id: body.trigger_id,
+  view: {
+    type: 'modal',
+    callback_id: 'dummy_loading_modal',
+    title: { type: 'plain_text', text: 'Loading...' },
+    close: { type: 'plain_text', text: 'Cancel' },
+    blocks: [
+      {
+        type: 'section',
+        text: { type: 'mrkdwn', text: 'Fetching current order metafields… Please wait.' }
+      }
+    ]
   }
+});
+
+// Now proceed with the heavy Shopify fetching below
 
 // Each order consumes ~11 blocks; cap at 8 per modal to stay < 100
 const MAX_ORDERS = 8;
@@ -778,11 +787,11 @@ const clipped = orders.length > slice.length;
     });
   }
 
-  await client.views.open({
-    trigger_id: body.trigger_id,
-    view: {
-      type: 'modal',
-      callback_id: 'update_meta_modal_submit_bulk',
+  await client.views.update({
+  view_id: body.view?.id, // updates the “Loading…” modal we just opened
+  view: {
+    type: 'modal',
+    callback_id: 'update_meta_modal_submit_bulk',
       private_metadata: JSON.stringify({ channel, thread_ts, invoiceName, orders: slice }),
       title: { type: 'plain_text', text: 'Edit Invoice Orders' },
       submit: { type: 'plain_text', text: 'Done' },
