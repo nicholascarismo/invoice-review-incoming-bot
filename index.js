@@ -320,39 +320,36 @@ app.view('invoice_review_collect_orders', async ({ ack, body, view, client, logg
   try {
     const md = JSON.parse(view.private_metadata || '{}');
     const channel = md.channel;
+    const userId = md.user;
     const invoiceName = (view.state.values?.invoice_block?.invoice_input?.value || '').trim();
 
-    // 1) Parse the textarea into unique order digits
+    // 1) Parse textarea into unique 4-digit order numbers
     const raw = view.state.values?.orders_block?.orders_input?.value || '';
     const inputLines = raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
-
-    // Accept formats like "C#1234" or "1234". (Your findOrderByName expects 4 digits.)
     const orderDigits = Array.from(new Set(
       inputLines
-        .map(s => (s.match(/(\d{4})/) || [,''])[1])  // extract 4 digits if present
+        .map(s => (s.match(/(\d{4})/) || [,''])[1])
         .filter(Boolean)
     ));
 
     if (!orderDigits.length) {
       await client.chat.postEphemeral({
         channel,
-        user: md.user,
+        user: userId,
         text: 'No valid 4-digit order numbers found.'
       });
       return;
     }
 
-    // 2) Look up all orders now (to show summary and to carry IDs forward)
+    // 2) Look up all orders now
     const found = [];   // [{digits, id, customerName}]
     const failed = [];  // [digits]
-
     for (const digits of orderDigits) {
       try {
         const order = await findOrderByName(digits);
         const customerName =
           order?.customer ? `${order.customer.first_name || ''} ${order.customer.last_name || ''}`.trim() :
           (order?.shipping_address ? `${order.shipping_address.first_name || ''} ${order.shipping_address.last_name || ''}`.trim() : 'Unknown');
-
         found.push({ digits, id: order.id, customerName });
       } catch (err) {
         logger.error(`Order C#${digits} lookup failed:`, err);
@@ -363,7 +360,7 @@ app.view('invoice_review_collect_orders', async ({ ack, body, view, client, logg
     if (!found.length) {
       await client.chat.postEphemeral({
         channel,
-        user: md.user,
+        user: userId,
         text: failed.length
           ? `No orders found. Failed lookups: ${failed.map(d => `C#${d}`).join(', ')}`
           : 'No orders found.'
@@ -371,65 +368,59 @@ app.view('invoice_review_collect_orders', async ({ ack, body, view, client, logg
       return;
     }
 
-    // 3) Post a single parent (root) message with summary + one button
-    const msgLines = [];
-    msgLines.push(`Invoice review started for ${found.length} order(s) by <@${md.user}>`);
-    if (invoiceName) msgLines.push(`*Invoice:* ${invoiceName}`);
-    msgLines.push('');
-    msgLines.push('*Orders:*');
-    for (const o of found) {
-      msgLines.push(`• C#${o.digits} — ${o.customerName || 'Unknown'}`);
-    }
-    if (failed.length) {
-      msgLines.push('');
-      msgLines.push(`⚠️ Not found: ${failed.map(d => `C#${d}`).join(', ')}`);
-    }
+    // 3) Post ONE parent message in the main channel (no buttons here)
+    const headline = [
+      `Invoice review started for ${found.length} order(s) by <@${userId}>`,
+      invoiceName ? `*Invoice:* ${invoiceName}` : null,
+      failed.length ? `⚠️ Not found: ${failed.map(d => `C#${d}`).join(', ')}` : null
+    ].filter(Boolean).join('\n');
 
     const parent = await client.chat.postMessage({
       channel,
-      text: msgLines.join('\n'),
-      blocks: [
-        { type: 'section', text: { type: 'mrkdwn', text: msgLines.join('\n') } },
-        {
-          type: 'actions',
-          elements: [
-            {
-              type: 'button',
-              text: { type: 'plain_text', text: 'Update Metafields (All)', emoji: true },
-              action_id: 'open_update_modal_bulk',
-              value: JSON.stringify({
-                channel,
-                thread_ts: undefined, // will set after post
-                invoiceName: invoiceName || '',
-                orders: found // carry [{digits,id,customerName}]
-              })
-            }
-          ]
-        }
-      ]
+      text: headline
     });
-
-    // Patch the just-posted message’s button value to include the actual thread_ts
     const root_ts = parent.ts;
-    const patched = parent.message?.blocks || parent.blocks || [];
-    for (const b of patched) {
-      if (b.type === 'actions') {
-        for (const el of b.elements || []) {
-          if (el.type === 'button' && el.action_id === 'open_update_modal_bulk') {
-            const v = JSON.parse(el.value || '{}');
-            v.thread_ts = root_ts;
-            el.value = JSON.stringify(v);
-          }
-        }
-      }
+
+    // 4) Chunk into batches of up to 8 (to keep modal blocks < 100)
+    const BATCH_SIZE = 8;
+    const batches = [];
+    for (let i = 0; i < found.length; i += BATCH_SIZE) {
+      batches.push(found.slice(i, i + BATCH_SIZE));
     }
-    // Update the message so the button carries the real thread_ts
-    await client.chat.update({
-      channel,
-      ts: root_ts,
-      text: msgLines.join('\n'),
-      blocks: patched
-    });
+
+    // 5) For each batch, post a thread reply with its own "Update Metafields (All)" button
+    let batchIndex = 1;
+    for (const batch of batches) {
+      const listLines = batch.map(o => `• C#${o.digits} — ${o.customerName || 'Unknown'}`).join('\n');
+      const batchTitle = batches.length > 1 ? `Batch ${batchIndex}/${batches.length}` : 'Batch 1/1';
+
+      await client.chat.postMessage({
+        channel,
+        thread_ts: root_ts,
+        text: `${batchTitle}\n${listLines}`,
+        blocks: [
+          { type: 'section', text: { type: 'mrkdwn', text: `*${batchTitle}*\n${listLines}` } },
+          {
+            type: 'actions',
+            elements: [
+              {
+                type: 'button',
+                text: { type: 'plain_text', text: 'Update Metafields (All)', emoji: true },
+                action_id: 'open_update_modal_bulk',
+                value: JSON.stringify({
+                  channel,
+                  thread_ts: root_ts,
+                  invoiceName: invoiceName || '',
+                  orders: batch   // only this batch goes to the modal
+                })
+              }
+            ]
+          }
+        ]
+      });
+
+      batchIndex += 1;
+    }
 
   } catch (e) {
     logger.error('invoice_review_collect_orders error:', e);
@@ -610,10 +601,10 @@ app.action('open_update_modal_bulk', async ({ ack, body, client, logger, action 
     return;
   }
 
-  // SAFETY: Slack modal block limit is 100. Each order consumes ~6–8 blocks.
-  const MAX_ORDERS = 10; // keeps us safely below the limit
-  const slice = orders.slice(0, MAX_ORDERS);
-  const clipped = orders.length > slice.length;
+// Each order consumes ~11 blocks; cap at 8 per modal to stay < 100
+const MAX_ORDERS = 8;
+const slice = orders.slice(0, MAX_ORDERS);
+const clipped = orders.length > slice.length;
 
   // Fetch initial metafields for each order to pre-populate
   const initialByOrder = {};
