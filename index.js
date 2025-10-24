@@ -81,6 +81,22 @@ async function runWithConcurrency(max, items, worker) {
   return results;
 }
 
+// ---- Global throttle for ALL Shopify calls (serialize + small gap) ----
+let __shopifyGate = Promise.resolve();
+const __SHOPIFY_MIN_GAP_MS = 400; // increase if you still see 429s
+
+async function __withShopifyThrottle(fn) {
+  const prev = __shopifyGate;
+  let release;
+  __shopifyGate = new Promise(res => { release = res; });
+  await prev;            // wait for the previous Shopify call to finish & release
+  try {
+    return await fn();   // perform the wrapped Shopify call
+  } finally {
+    setTimeout(release, __SHOPIFY_MIN_GAP_MS); // wait a bit before allowing next call
+  }
+}
+
 /* =========================
    Shopify Helpers
 ========================= */
@@ -88,7 +104,7 @@ const SHOPIFY_BASE = `https://${SHOPIFY_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}
 
 async function shopifyFetch(pathname, { method = 'GET', headers = {}, body } = {}, attempt = 1) {
   const url = `${SHOPIFY_BASE}${pathname}`;
-  const res = await fetch(url, {
+  const res = await __withShopifyThrottle(() => fetch(url, {
     method,
     headers: {
       'X-Shopify-Access-Token': SHOPIFY_ADMIN_TOKEN,
@@ -96,7 +112,7 @@ async function shopifyFetch(pathname, { method = 'GET', headers = {}, body } = {
       ...headers
     },
     body: body ? JSON.stringify(body) : undefined
-  });
+  }));
 
   // Handle rate limiting / transient errors with backoff
   if (res.status === 429 || (res.status >= 500 && res.status < 600)) {
@@ -1020,8 +1036,8 @@ app.view('update_meta_modal_submit_bulk', async ({ ack, body, view, client, logg
 // Save per order with limited concurrency and sequential metafield writes per order
 const yesNo = (on, yes, no) => (on ? yes : no);
 
-// Process up to 2 orders at a time to avoid Shopify 429s
-const results = await runWithConcurrency(2, orders, async (o) => {
+// Process ONE order at a time to avoid Shopify 429s
+const results = await runWithConcurrency(1, orders, async (o) => {
   const p = parseOne(state, o.digits);
   const set = new Set(p.partsSelected);
 
