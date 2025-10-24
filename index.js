@@ -1160,6 +1160,7 @@ const yesNo = (on, yes, no) => (on ? yes : no);
 // Process ONE order at a time to avoid Shopify 429s
 const results = await runWithConcurrency(1, orders, async (o) => {
   try {
+    const mfOps = [];
   const p = parseOne(state, o.digits);
   const set = new Set(p.partsSelected);
 
@@ -1259,7 +1260,7 @@ if (line4) {
 }
 const packingSlipNotes = packingLines.join('\n');
 
-  const mfOps = [
+    mfOps.push(
     upsertOrderMetafield(o.id, 'custom', 'parts_steering_wheel',   yesNo(steeringWheelOn, 'Steering Wheel', 'No Steering Wheel')),
     upsertOrderMetafield(o.id, 'custom', 'parts_trim',             yesNo(trimOn,          'Trim',            'No Trim')),
     upsertOrderMetafield(o.id, 'custom', 'parts_paddles',          yesNo(paddlesOn,       'Paddles',         'No Paddles')),
@@ -1271,7 +1272,7 @@ const packingSlipNotes = packingLines.join('\n');
     upsertOrderMetafield(o.id, 'custom', 'who_contacts',           'Nick'),
     upsertOrderMetafield(o.id, 'custom', 'packing_slip_notes',     packingSlipNotes, 'multi_line_text_field'),
     upsertOrderMetafield(o.id, 'custom', 'initial_slack_tagging_done', 'Yes')
-  ];
+  );
 
   if (otherSelected && (p.otherText || '').trim() !== '') {
     mfOps.push(upsertOrderMetafield(o.id, 'custom', 'parts_other', (p.otherText || '').trim()));
