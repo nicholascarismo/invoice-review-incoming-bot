@@ -630,7 +630,7 @@ try { payload = JSON.parse(action.value || '{}'); } catch (_) {}
 const { channel, thread_ts, invoiceName, orders } = payload;
 
 // Immediately open a "Loading..." modal (this uses the live trigger_id)
-await client.views.open({
+const loading = await client.views.open({
   trigger_id: body.trigger_id,
   view: {
     type: 'modal',
@@ -645,6 +645,7 @@ await client.views.open({
     ]
   }
 });
+const loadingViewId = loading.view.id;
 
 // Now proceed with the heavy Shopify fetching below
 
@@ -788,17 +789,17 @@ const clipped = orders.length > slice.length;
   }
 
   await client.views.update({
-  view_id: body.view?.id, // updates the “Loading…” modal we just opened
+  view_id: loadingViewId,
   view: {
     type: 'modal',
     callback_id: 'update_meta_modal_submit_bulk',
-      private_metadata: JSON.stringify({ channel, thread_ts, invoiceName, orders: slice }),
-      title: { type: 'plain_text', text: 'Edit Invoice Orders' },
-      submit: { type: 'plain_text', text: 'Done' },
-      close: { type: 'plain_text', text: 'Cancel' },
-      blocks
-    }
-  });
+    private_metadata: JSON.stringify({ channel, thread_ts, invoiceName, orders: slice }),
+    title: { type: 'plain_text', text: 'Edit Invoice Orders' },
+    submit: { type: 'plain_text', text: 'Done' },
+    close: { type: 'plain_text', text: 'Cancel' },
+    blocks
+  }
+});
 });
 
 /* =========================
