@@ -1211,16 +1211,15 @@ if (currentArrangedWith) {
   }
 }
 
-// 3) custom.*nc_incoming* => "INCOMING" (create one if none exist)
+// 3) Set custom.nc_incoming => "INCOMING" (always), and also update any other *nc_incoming* variants if present
+mfOps.push(upsertOrderMetafield(o.id, 'custom', 'nc_incoming', 'INCOMING'));
+
 const incomingKeys = Object.keys(mfMap)
   .filter(k => k.startsWith('custom.') && k.includes('nc_incoming'))
-  .map(k => k.split('.')[1]); // keep only the key part
-if (incomingKeys.length) {
-  for (const k of incomingKeys) {
-    mfOps.push(upsertOrderMetafield(o.id, 'custom', k, 'INCOMING'));
-  }
-} else {
-  mfOps.push(upsertOrderMetafield(o.id, 'custom', '_nc_incoming', 'INCOMING'));
+  .map(k => k.split('.')[1]) // keep only the key part
+  .filter(k => k !== 'nc_incoming'); // we've already set the canonical key above
+for (const k of incomingKeys) {
+  mfOps.push(upsertOrderMetafield(o.id, 'custom', k, 'INCOMING'));
 }
 
 // 4) Append to custom._back_end_incoming_invoice
@@ -1303,6 +1302,15 @@ if (arrangeTagAction === 'remove') {
   const newTags = currentTags.filter(t => t !== 'ArrangeStatus_Arranged');
   if (newTags.length !== currentTags.length) {
     await updateOrderTags(o.id, newTags);
+  }
+}
+
+// (2d) Ensure tag "Incoming_Yes" is present
+{
+  const currentTags2 = await fetchOrderTags(o.id);
+  if (!currentTags2.includes('Incoming_Yes')) {
+    const added = currentTags2.concat(['Incoming_Yes']);
+    await updateOrderTags(o.id, added);
   }
 }
 
