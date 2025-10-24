@@ -936,12 +936,15 @@ if (suppliersCsv) {
     }
 
     const line1 = `${fulfillmentLabel.toUpperCase()} — ${paymentLabel.toUpperCase()}`;
-    const line2 = ''; // blank spacer line
-    const line4 = setAsideSelected && setAsideText ? `Set Aside For Now: ${setAsideText}` : '';
+const line2 = ''; // blank spacer line
+const line4 = setAsideSelected && setAsideText ? `Should Be Set Aside Already: ${setAsideText}` : '';
 
-    const packingLines = [line1, line2, line3];
-    if (line4) packingLines.push(line4);
-    const packingSlipNotes = packingLines.join('\n');
+const packingLines = [line1, line2, line3];
+if (line4) {
+  packingLines.push('');        // extra blank line before the set-aside note
+  packingLines.push(line4);     // the set-aside note line
+}
+const packingSlipNotes = packingLines.join('\n');
 
     // Use multi_line_text_field for creation
     mfOps.push(upsertOrderMetafield(meta.orderId, 'custom', 'packing_slip_notes', packingSlipNotes, 'multi_line_text_field'));
@@ -1072,11 +1075,14 @@ const results = await runWithConcurrency(1, orders, async (o) => {
   if (partsListForLine3.length === 1) line3 = `${partsListForLine3[0]} only`;
 
   const line1 = `${p.fulfillmentLabel.toUpperCase()} — ${p.paymentLabel.toUpperCase()}`;
-  const line2 = '';
-  const line4 = setAsideSelected && p.setAsideText ? `Set Aside For Now: ${p.setAsideText}` : '';
-  const packingLines = [line1, line2, line3];
-  if (line4) packingLines.push(line4);
-  const packingSlipNotes = packingLines.join('\n');
+const line2 = '';
+const line4 = setAsideSelected && p.setAsideText ? `Should Be Set Aside Already: ${p.setAsideText}` : '';
+const packingLines = [line1, line2, line3];
+if (line4) {
+  packingLines.push('');        // extra blank line before the set-aside note
+  packingLines.push(line4);     // the set-aside note line
+}
+const packingSlipNotes = packingLines.join('\n');
 
   const mfOps = [
     upsertOrderMetafield(o.id, 'custom', 'parts_steering_wheel',   yesNo(steeringWheelOn, 'Steering Wheel', 'No Steering Wheel')),
