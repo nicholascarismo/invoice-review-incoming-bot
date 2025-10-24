@@ -277,18 +277,29 @@ app.command('/invoice-review', async ({ ack, body, client, logger }) => {
           user: body.user_id
         }),
         blocks: [
-          {
-            type: 'input',
-            block_id: 'orders_block',
-            label: { type: 'plain_text', text: 'Paste order numbers (one per line)' },
-            element: {
-              type: 'plain_text_input',
-              action_id: 'orders_input',
-              multiline: true,
-              placeholder: { type: 'plain_text', text: 'e.g.\nC#1234\nC#1235\n1236' }
-            }
-          }
-        ]
+  {
+    type: 'input',
+    block_id: 'invoice_block',
+    label: { type: 'plain_text', text: 'Invoice name' },
+    element: {
+      type: 'plain_text_input',
+      action_id: 'invoice_input',
+      multiline: false,
+      placeholder: { type: 'plain_text', text: 'e.g. INV-2025-001 or “January Install Batch”' }
+    }
+  },
+  {
+    type: 'input',
+    block_id: 'orders_block',
+    label: { type: 'plain_text', text: 'Paste order numbers (one per line)' },
+    element: {
+      type: 'plain_text_input',
+      action_id: 'orders_input',
+      multiline: true,
+      placeholder: { type: 'plain_text', text: 'e.g.\nC#1234\nC#1235\n1236' }
+    }
+  }
+]
       }
     });
   } catch (e) {
@@ -309,6 +320,7 @@ app.view('invoice_review_collect_orders', async ({ ack, body, view, client, logg
   try {
     const md = JSON.parse(view.private_metadata || '{}');
     const channel = md.channel;
+const invoiceName = (view.state.values?.invoice_block?.invoice_input?.value || '').trim();
 
     // 1) Parse the textarea into unique order digits
     const raw = view.state.values?.orders_block?.orders_input?.value || '';
@@ -330,11 +342,11 @@ app.view('invoice_review_collect_orders', async ({ ack, body, view, client, logg
       return;
     }
 
-    // 2) Post a parent (root) message
-    const parent = await client.chat.postMessage({
-      channel,
-      text: `Invoice review started for ${orderDigits.length} order(s) by <@${md.user}>`
-    });
+// 2) Post a parent (root) message (include invoice name if provided)
+const parent = await client.chat.postMessage({
+  channel,
+  text: `Invoice review started for ${orderDigits.length} order(s) by <@${md.user}>` + (invoiceName ? `\n*Invoice:* ${invoiceName}` : '')
+});
     const root_ts = parent.ts;
 
     // 3) For each order: look it up and post a thread reply with the **Update Metafields** button
