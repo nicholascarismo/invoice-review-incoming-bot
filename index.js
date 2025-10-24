@@ -37,6 +37,46 @@ if (!SHOPIFY_DOMAIN || !SHOPIFY_ADMIN_TOKEN) {
 const DATA_DIR = path.resolve('./data');
 const ORDERS_DIR = path.join(DATA_DIR, 'orders');
 
+// Suppliers list (editable JSON file)
+const SUPPLIERS_FILE = path.join(DATA_DIR, 'suppliers.json');
+
+async function ensureSuppliersFile() {
+  try {
+    await fsp.access(SUPPLIERS_FILE, fs.constants.F_OK);
+  } catch {
+    const defaultSuppliers = [
+      "OHC",
+      "Bospeed",
+      "Acme Parts",
+      "Contoso Components"
+    ];
+    await fsp.writeFile(SUPPLIERS_FILE, JSON.stringify(defaultSuppliers, null, 2), 'utf8');
+    console.log(`[init] Created ${SUPPLIERS_FILE} with default suppliers`);
+  }
+}
+
+async function loadSuppliers() {
+  try {
+    const txt = await fsp.readFile(SUPPLIERS_FILE, 'utf8');
+    const list = JSON.parse(txt);
+    if (Array.isArray(list)) {
+      // normalize to non-empty trimmed strings, dedup, and cap at Slack's option limit (100)
+      const normalized = Array.from(
+        new Set(
+          list
+            .map(s => (typeof s === 'string' ? s.trim() : ''))
+            .filter(Boolean)
+        )
+      );
+      return normalized.slice(0, 100);
+    }
+    return [];
+  } catch (e) {
+    console.error(`[suppliers] failed to load ${SUPPLIERS_FILE}:`, e?.message || e);
+    return [];
+  }
+}
+
 async function ensureDirs() {
   await fsp.mkdir(DATA_DIR, { recursive: true });
   await fsp.mkdir(ORDERS_DIR, { recursive: true });
@@ -302,6 +342,13 @@ app.command('/ping', async ({ ack, respond, command, logger }) => {
 app.command('/invoice-review', async ({ ack, body, client, logger }) => {
   await ack();
   try {
+    // Load suppliers and build dropdown options
+    const suppliers = await loadSuppliers();
+    const supplierOptions = suppliers.map(name => ({
+      text: { type: 'plain_text', text: name },
+      value: name
+    }));
+
     await client.views.open({
       trigger_id: body.trigger_id,
       view: {
@@ -315,29 +362,42 @@ app.command('/invoice-review', async ({ ack, body, client, logger }) => {
           user: body.user_id
         }),
         blocks: [
-  {
-    type: 'input',
-    block_id: 'invoice_block',
-    label: { type: 'plain_text', text: 'Invoice name' },
-    element: {
-      type: 'plain_text_input',
-      action_id: 'invoice_input',
-      multiline: false,
-      placeholder: { type: 'plain_text', text: 'e.g. OHC 10-23 or Bospeed 8-1' }
-    }
-  },
-  {
-    type: 'input',
-    block_id: 'orders_block',
-    label: { type: 'plain_text', text: 'Paste order numbers (one per line)' },
-    element: {
-      type: 'plain_text_input',
-      action_id: 'orders_input',
-      multiline: true,
-      placeholder: { type: 'plain_text', text: 'e.g.\nC#1234\nC#1235\nC#1236' }
-    }
-  }
-]
+          {
+            type: 'input',
+            block_id: 'supplier_block',
+            label: { type: 'plain_text', text: 'Supplier' },
+            element: {
+              type: 'static_select',
+              action_id: 'supplier_select',
+              placeholder: { type: 'plain_text', text: supplierOptions.length ? 'Select a supplier' : 'No suppliers found' },
+              options: supplierOptions.length
+                ? supplierOptions
+                : [{ text: { type: 'plain_text', text: '— No suppliers configured —' }, value: 'NO_SUPPLIERS' }]
+            }
+          },
+          {
+            type: 'input',
+            block_id: 'invoice_date_block',
+            label: { type: 'plain_text', text: 'Invoice Date' },
+            element: {
+              type: 'plain_text_input',
+              action_id: 'invoice_date_input',
+              multiline: false,
+              placeholder: { type: 'plain_text', text: 'e.g. 2025-01-15 or 10/23' }
+            }
+          },
+          {
+            type: 'input',
+            block_id: 'orders_block',
+            label: { type: 'plain_text', text: 'Paste order numbers (one per line)' },
+            element: {
+              type: 'plain_text_input',
+              action_id: 'orders_input',
+              multiline: true,
+              placeholder: { type: 'plain_text', text: 'e.g.\nC#1234\nC#1235\nC#1236' }
+            }
+          }
+        ]
       }
     });
   } catch (e) {
@@ -359,7 +419,10 @@ app.view('invoice_review_collect_orders', async ({ ack, body, view, client, logg
     const md = JSON.parse(view.private_metadata || '{}');
     const channel = md.channel;
     const userId = md.user;
-    const invoiceName = (view.state.values?.invoice_block?.invoice_input?.value || '').trim();
+
+    // NEW: read supplier + invoice date
+    const invoiceSupplier = view.state.values?.supplier_block?.supplier_select?.selected_option?.value || '';
+    const invoiceDate = (view.state.values?.invoice_date_block?.invoice_date_input?.value || '').trim();
 
     // 1) Parse textarea into unique 4-digit order numbers
     const raw = view.state.values?.orders_block?.orders_input?.value || '';
@@ -407,9 +470,13 @@ app.view('invoice_review_collect_orders', async ({ ack, body, view, client, logg
     }
 
     // 3) Post ONE parent message in the main channel (no buttons here)
+    const headerInvoiceLine = (invoiceSupplier || invoiceDate)
+      ? `*Invoice:* ${[invoiceSupplier, invoiceDate].filter(Boolean).join(' — ')}`
+      : null;
+
     const headline = [
       `Invoice review started for ${found.length} order(s) by <@${userId}>`,
-      invoiceName ? `*Invoice:* ${invoiceName}` : null,
+      headerInvoiceLine,
       failed.length ? `⚠️ Not found: ${failed.map(d => `C#${d}`).join(', ')}` : null
     ].filter(Boolean).join('\n');
 
@@ -448,7 +515,8 @@ app.view('invoice_review_collect_orders', async ({ ack, body, view, client, logg
                 value: JSON.stringify({
                   channel,
                   thread_ts: root_ts,
-                  invoiceName: invoiceName || '',
+                  invoiceSupplier: invoiceSupplier || '',
+                  invoiceDate: invoiceDate || '',
                   orders: batch   // only this batch goes to the modal
                 })
               }
@@ -624,35 +692,35 @@ app.action('open_update_modal', async ({ ack, body, client, logger, action }) =>
 app.action('open_update_modal_bulk', async ({ ack, body, client, logger, action }) => {
   await ack();
 
-// Parse payload right away
-let payload = { channel: '', thread_ts: '', invoiceName: '', orders: [] };
-try { payload = JSON.parse(action.value || '{}'); } catch (_) {}
-const { channel, thread_ts, invoiceName, orders } = payload;
+  // Parse payload right away (now expecting supplier/date)
+  let payload = { channel: '', thread_ts: '', invoiceSupplier: '', invoiceDate: '', orders: [] };
+  try { payload = JSON.parse(action.value || '{}'); } catch (_) {}
+  const { channel, thread_ts, invoiceSupplier, invoiceDate, orders } = payload;
 
-// Immediately open a "Loading..." modal (this uses the live trigger_id)
-const loading = await client.views.open({
-  trigger_id: body.trigger_id,
-  view: {
-    type: 'modal',
-    callback_id: 'dummy_loading_modal',
-    title: { type: 'plain_text', text: 'Loading...' },
-    close: { type: 'plain_text', text: 'Cancel' },
-    blocks: [
-      {
-        type: 'section',
-        text: { type: 'mrkdwn', text: 'Fetching current order metafields… Please wait.' }
-      }
-    ]
-  }
-});
-const loadingViewId = loading.view.id;
+  // Immediately open a "Loading..." modal (this uses the live trigger_id)
+  const loading = await client.views.open({
+    trigger_id: body.trigger_id,
+    view: {
+      type: 'modal',
+      callback_id: 'dummy_loading_modal',
+      title: { type: 'plain_text', text: 'Loading...' },
+      close: { type: 'plain_text', text: 'Cancel' },
+      blocks: [
+        {
+          type: 'section',
+          text: { type: 'mrkdwn', text: 'Fetching current order metafields… Please wait.' }
+        }
+      ]
+    }
+  });
+  const loadingViewId = loading.view.id;
 
-// Now proceed with the heavy Shopify fetching below
+  // Now proceed with the heavy Shopify fetching below
 
-// Each order consumes ~11 blocks; cap at 8 per modal to stay < 100
-const MAX_ORDERS = 8;
-const slice = orders.slice(0, MAX_ORDERS);
-const clipped = orders.length > slice.length;
+  // Each order consumes ~11 blocks; cap at 8 per modal to stay < 100
+  const MAX_ORDERS = 8;
+  const slice = orders.slice(0, MAX_ORDERS);
+  const clipped = orders.length > slice.length;
 
   // Fetch initial metafields for each order to pre-populate
   const initialByOrder = {};
@@ -678,16 +746,8 @@ const clipped = orders.length > slice.length;
     { text: { type: 'plain_text', text: 'Parts Set Aside (requires text)' }, value: 'set_aside' }
   ];
 
-  // Build blocks per order with unique block_ids
-  const blocks = [];
-  blocks.push({
-    type: 'header',
-    text: { type: 'plain_text', text: invoiceName ? `Invoice: ${invoiceName}` : 'Invoice Review' }
-  });
-  if (clipped) {
-    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `Showing first ${slice.length} orders (Slack modal limit).` } });
-  }
-
+  // Build the per-order blocks (without header; we'll prepend header when updating the view)
+  const orderBlocks = [];
   for (const o of slice) {
     const init = initialByOrder[o.digits];
     const initialCheckboxOptions = PART_OPTIONS.filter(p => init.partsSelections.includes(p.value));
@@ -702,14 +762,12 @@ const clipped = orders.length > slice.length;
       init.payment === 'unknown' ? 'Unknown' : 'PIF';
     const paymentInitial = { text: { type: 'plain_text', text: paymentLabel }, value: init.payment };
 
-    // Visually separate each order
-    blocks.push({ type: 'divider' });
-    blocks.push({
+    orderBlocks.push({ type: 'divider' });
+    orderBlocks.push({
       type: 'section',
       text: { type: 'mrkdwn', text: `*Order C#${o.digits}* — *${o.customerName || 'Unknown'}*` }
     });
-
-    blocks.push({
+    orderBlocks.push({
       type: 'input',
       block_id: `parts_block_${o.digits}`,
       label: { type: 'plain_text', text: 'Parts — select all that apply' },
@@ -720,8 +778,7 @@ const clipped = orders.length > slice.length;
         options: PART_OPTIONS
       }
     });
-
-    blocks.push({
+    orderBlocks.push({
       type: 'input',
       block_id: `parts_other_text_${o.digits}`,
       optional: true,
@@ -734,8 +791,7 @@ const clipped = orders.length > slice.length;
         placeholder: { type: 'plain_text', text: 'Enter details if you checked "Other"' }
       }
     });
-
-    blocks.push({
+    orderBlocks.push({
       type: 'input',
       block_id: `parts_set_aside_text_${o.digits}`,
       optional: true,
@@ -748,10 +804,9 @@ const clipped = orders.length > slice.length;
         placeholder: { type: 'plain_text', text: 'Enter details if you checked "Parts Set Aside"' }
       }
     });
-
-    blocks.push({ type: 'divider' });
-    blocks.push({ type: 'header', text: { type: 'plain_text', text: 'Fulfillment' } });
-    blocks.push({
+    orderBlocks.push({ type: 'divider' });
+    orderBlocks.push({ type: 'header', text: { type: 'plain_text', text: 'Fulfillment' } });
+    orderBlocks.push({
       type: 'input',
       block_id: `fulfillment_block_${o.digits}`,
       label: { type: 'plain_text', text: 'Choose one' },
@@ -766,10 +821,9 @@ const clipped = orders.length > slice.length;
         ]
       }
     });
-
-    blocks.push({ type: 'divider' });
-    blocks.push({ type: 'header', text: { type: 'plain_text', text: 'Payment' } });
-    blocks.push({
+    orderBlocks.push({ type: 'divider' });
+    orderBlocks.push({ type: 'header', text: { type: 'plain_text', text: 'Payment' } });
+    orderBlocks.push({
       type: 'input',
       block_id: `payment_block_${o.digits}`,
       label: { type: 'plain_text', text: 'Choose one' },
@@ -788,18 +842,41 @@ const clipped = orders.length > slice.length;
     });
   }
 
+  const invoiceHeader = (invoiceSupplier || invoiceDate)
+    ? `Invoice: ${[invoiceSupplier, invoiceDate].filter(Boolean).join(' — ')}`
+    : 'Invoice Review';
+
+  // Compose final blocks with header + optional clipped note + per-order blocks
+  const finalBlocks = [
+    {
+      type: 'header',
+      text: { type: 'plain_text', text: invoiceHeader }
+    },
+    ...(clipped ? [{
+      type: 'section',
+      text: { type: 'mrkdwn', text: `Showing first ${slice.length} orders (Slack modal limit).` }
+    }] : []),
+    ...orderBlocks
+  ];
+
   await client.views.update({
-  view_id: loadingViewId,
-  view: {
-    type: 'modal',
-    callback_id: 'update_meta_modal_submit_bulk',
-    private_metadata: JSON.stringify({ channel, thread_ts, invoiceName, orders: slice }),
-    title: { type: 'plain_text', text: 'Edit Invoice Orders' },
-    submit: { type: 'plain_text', text: 'Done' },
-    close: { type: 'plain_text', text: 'Cancel' },
-    blocks
-  }
-});
+    view_id: loadingViewId,
+    view: {
+      type: 'modal',
+      callback_id: 'update_meta_modal_submit_bulk',
+      private_metadata: JSON.stringify({
+        channel,
+        thread_ts,
+        invoiceSupplier: invoiceSupplier || '',
+        invoiceDate: invoiceDate || '',
+        orders: slice
+      }),
+      title: { type: 'plain_text', text: 'Edit Invoice Orders' },
+      submit: { type: 'plain_text', text: 'Done' },
+      close: { type: 'plain_text', text: 'Cancel' },
+      blocks: finalBlocks
+    }
+  });
 });
 
 /* =========================
@@ -1200,6 +1277,7 @@ server.listen(PORT, () => {
 ========================= */
 (async () => {
   await ensureDirs();
+  await ensureSuppliersFile(); // <-- ensure data/suppliers.json exists
 
   await app.start();
   console.log('[slack] app started (Socket Mode)');
