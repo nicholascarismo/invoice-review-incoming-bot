@@ -319,6 +319,29 @@ async function fetchOrderTags(orderId) {
   return raw.split(',').map(t => t.trim()).filter(Boolean);
 }
 
+// Read only the "note" field for an order
+async function fetchOrderNote(orderId) {
+  const data = await shopifyFetch(`/orders/${orderId}.json?fields=note`);
+  return data?.order?.note || '';
+}
+
+// Update order "note"
+async function updateOrderNote(orderId, note) {
+  await shopifyFetch(`/orders/${orderId}.json`, {
+    method: 'PUT',
+    body: { order: { id: orderId, note } }
+  });
+}
+
+// Replace full tag set for an order
+async function updateOrderTags(orderId, tagsArray) {
+  const tags = tagsArray.join(', ');
+  await shopifyFetch(`/orders/${orderId}.json`, {
+    method: 'PUT',
+    body: { order: { id: orderId, tags } }
+  });
+}
+
 /* =========================
    Slack App (Socket Mode)
 ========================= */
@@ -1075,7 +1098,7 @@ const packingSlipNotes = packingLines.join('\n');
 app.view('update_meta_modal_submit_bulk', async ({ ack, body, view, client, logger }) => {
   // Per-order validation and save
   const md = JSON.parse(view.private_metadata || '{}');
-  const { channel, thread_ts, orders } = md;
+const { channel, thread_ts, invoiceSupplier, invoiceDate, orders } = md;
 
   // Build a per-order extractor using the same rules as your single-order flow
   function parseOne(state, digits) {
@@ -1148,6 +1171,62 @@ const results = await runWithConcurrency(1, orders, async (o) => {
   const otherSelected    = set.has('other');
   const setAsideSelected = set.has('set_aside');
 
+// ===== Arrange / Incoming / Back-end Incoming Invoice (prep) =====
+const mfMap = await fetchOrderMetafields(o.id);
+const currentArrangedWith = (mfMap['custom._nc_arranged_with'] || '').trim();
+
+// Arrange status/tag action tracker
+let arrangeTagAction = 'leave'; // 'leave' | 'remove'
+
+// 2) Arrange logic
+if (currentArrangedWith) {
+  if (currentArrangedWith.includes('&')) {
+    // multiple suppliers (future-proof: any number of "&")
+    const parts = currentArrangedWith.split('&').map(s => s.trim()).filter(Boolean);
+    const supplierToRemove = (invoiceSupplier || '').trim();
+    const filtered = parts.filter(s => s !== supplierToRemove);
+    const newValue = filtered.join(' & ');
+
+    if (newValue && newValue !== currentArrangedWith) {
+      // Try update; if Shopify rejects (enum not allowed), throw a helpful error
+      mfOps.push((async () => {
+        try {
+          await upsertOrderMetafield(o.id, 'custom', '_nc_arranged_with', newValue);
+        } catch (err) {
+          throw new Error(
+            `Order C#${o.digits}: cannot set custom._nc_arranged_with="${newValue}". ` +
+            `Add this exact value to the allowed list in Shopify Admin, then retry.`
+          );
+        }
+      })());
+    }
+    // Keep arrange_status as-is (should remain "Arranged") and DO NOT remove ArrangeStatus_Arranged tag.
+  } else {
+    // single supplier
+    mfOps.push(deleteOrderMetafield(o.id, 'custom', 'arrange_status'));
+    mfOps.push(deleteOrderMetafield(o.id, 'custom', '_nc_arranged_with'));
+    arrangeTagAction = 'remove'; // remove ArrangeStatus_Arranged later
+  }
+}
+
+// 3) custom.*nc_incoming* => "INCOMING" (create one if none exist)
+const incomingKeys = Object.keys(mfMap)
+  .filter(k => k.startsWith('custom.') && k.includes('nc_incoming'))
+  .map(k => k.split('.')[1]); // keep only the key part
+if (incomingKeys.length) {
+  for (const k of incomingKeys) {
+    mfOps.push(upsertOrderMetafield(o.id, 'custom', k, 'INCOMING'));
+  }
+} else {
+  mfOps.push(upsertOrderMetafield(o.id, 'custom', '_nc_incoming', 'INCOMING'));
+}
+
+// 4) Append to custom._back_end_incoming_invoice
+const currentBackEnd = (mfMap['custom._back_end_incoming_invoice'] || '').trim();
+const appendLabel = `${(invoiceSupplier || '').trim()} ${(invoiceDate || '').trim()} Invoice`.trim();
+const newBackEnd = currentBackEnd ? `${currentBackEnd}; ${appendLabel}` : appendLabel;
+mfOps.push(upsertOrderMetafield(o.id, 'custom', '_back_end_incoming_invoice', newBackEnd));
+
   // 5) parts_suppliers from tags starting with PartsSupplier_
   const tags = await fetchOrderTags(o.id);
   const suppliers = tags
@@ -1215,6 +1294,26 @@ const packingSlipNotes = packingLines.join('\n');
   for (const op of mfOps) {
     await op;
   }
+
+// (2c) Remove the ArrangeStatus_Arranged tag ONLY if we cleared _nc_arranged_with (single-supplier case)
+if (arrangeTagAction === 'remove') {
+  const currentTags = await fetchOrderTags(o.id);
+  const newTags = currentTags.filter(t => t !== 'ArrangeStatus_Arranged');
+  if (newTags.length !== currentTags.length) {
+    await updateOrderTags(o.id, newTags);
+  }
+}
+
+// (5) Prepend the invoice update line to the order note
+const existingNote = await fetchOrderNote(o.id);
+const now = new Date();
+const mm = String(now.getMonth() + 1).padStart(2, '0');
+const dd = String(now.getDate()).padStart(2, '0');
+const yyyy = String(now.getFullYear());
+const headerLine = `Update ${mm}/${dd}/${yyyy}: Invoiced with ${(invoiceSupplier || '').trim()} ${(invoiceDate || '').trim()} Invoice`;
+const dashLine = '————————————'; // em-dash line
+const newNote = `${headerLine}\n${dashLine}\n${existingNote || ''}`;
+await updateOrderNote(o.id, newNote);
 
   // Persist a tiny snapshot file per order
   await ensureDirs();
