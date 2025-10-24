@@ -6,6 +6,9 @@ import express from 'express';
 import boltPkg from '@slack/bolt';
 
 const { App } = boltPkg;
+// ESM-safe file/dir resolution for this module
+const __FILENAME = new URL(import.meta.url).pathname;
+const __DIRNAME = path.dirname(__FILENAME);
 
 /* =========================
    Env & Config
@@ -37,8 +40,8 @@ if (!SHOPIFY_DOMAIN || !SHOPIFY_ADMIN_TOKEN) {
 const DATA_DIR = path.resolve('./data');
 const ORDERS_DIR = path.join(DATA_DIR, 'orders');
 
-// Suppliers list (editable JSON file)
-const SUPPLIERS_FILE = path.join(DATA_DIR, 'suppliers.json');
+// Suppliers list (editable JSON file, lives NEXT TO index.js)
+const SUPPLIERS_FILE = path.join(__DIRNAME, 'suppliers.json');
 
 async function ensureSuppliersFile() {
   try {
@@ -383,7 +386,7 @@ app.command('/invoice-review', async ({ ack, body, client, logger }) => {
               type: 'plain_text_input',
               action_id: 'invoice_date_input',
               multiline: false,
-              placeholder: { type: 'plain_text', text: 'e.g. 2025-01-15 or 10/23' }
+              placeholder: { type: 'plain_text', text: 'e.g. 10-23 or 8-6, etc.' }
             }
           },
           {
@@ -470,12 +473,16 @@ app.view('invoice_review_collect_orders', async ({ ack, body, view, client, logg
     }
 
     // 3) Post ONE parent message in the main channel (no buttons here)
+    // CHANGE #1: remove "by <@${userId}>"
+    const firstLine = `Invoice review started for ${found.length} order(s)`;
+
+    // CHANGE #2: Invoice line uses a space instead of a long dash between supplier and date
     const headerInvoiceLine = (invoiceSupplier || invoiceDate)
-      ? `*Invoice:* ${[invoiceSupplier, invoiceDate].filter(Boolean).join(' — ')}`
+      ? `*Invoice:* ${[invoiceSupplier, invoiceDate].filter(Boolean).join(' ')}`
       : null;
 
     const headline = [
-      `Invoice review started for ${found.length} order(s) by <@${userId}>`,
+      firstLine,
       headerInvoiceLine,
       failed.length ? `⚠️ Not found: ${failed.map(d => `C#${d}`).join(', ')}` : null
     ].filter(Boolean).join('\n');
